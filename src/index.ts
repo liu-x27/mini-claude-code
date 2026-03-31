@@ -1,0 +1,64 @@
+/**
+ * agent-app — A production-grade, extensible Agent framework powered by Claude
+ *
+ * @example
+ * ```ts
+ * import { Agent } from "agent-app";
+ *
+ * const agent = new Agent({
+ *   model: "claude-opus-4-6",
+ *   allowedTools: ["Read", "Glob", "Grep"],
+ * });
+ *
+ * const result = await agent.run("Explain what this codebase does");
+ * console.log(result.text);
+ * ```
+ */
+
+// Core
+export { Agent } from "./agent.js";
+
+// Tools
+export { Tool } from "./tools/base.js";
+export { ToolRegistry, globalRegistry } from "./tools/registry.js";
+export { registerBuiltinTools } from "./tools/index.js";
+export { BashTool } from "./tools/bash.js";
+export { FileReadTool } from "./tools/file-read.js";
+export { FileWriteTool } from "./tools/file-write.js";
+export { FileEditTool } from "./tools/file-edit.js";
+export { GlobTool } from "./tools/glob.js";
+export { GrepTool } from "./tools/grep.js";
+export { WebFetchTool } from "./tools/web-fetch.js";
+
+// Session
+export { SessionManager } from "./session/manager.js";
+
+// Permissions
+export { PermissionSystem, PermissionPresets } from "./permissions/index.js";
+
+// Utils
+export { logger } from "./utils/logger.js";
+export { estimateCost, formatCost } from "./utils/cost.js";
+
+// Types
+export type {
+  AgentConfig,
+  AgentResult,
+  AgentEvent,
+  AgentEventHandler,
+  AgentUsage,
+  ModelId,
+  ToolResult,
+  ToolContext,
+  ToolInputSchema,
+  PermissionContext,
+  PermissionMode,
+  PermissionRule,
+  Session,
+  SessionMetadata,
+  ConversationMessage,
+  SubagentDefinition,
+  ThinkingConfig,
+  EffortLevel,
+  ToolCallRecord,
+} from "./types.js";
