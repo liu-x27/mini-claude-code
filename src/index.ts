@@ -41,6 +41,24 @@ export {
   parseDecision,
 } from "./permissions/index.js";
 
+// Judge — the decision layer in front of the permission prompt
+export {
+  AllowlistJudge,
+  LlmJudge,
+  createRiskGate,
+  RISK_QUESTIONS,
+  UNKNOWN_PROBABILITY,
+} from "./judge/index.js";
+export type {
+  JudgeBackend,
+  JudgeCapability,
+  JudgeState,
+  LlmJudgeOptions,
+  NoulAnswer,
+  NoulQuestion,
+  RiskGateOptions,
+} from "./judge/index.js";
+
 // Utils
 export { logger } from "./utils/logger.js";
 export { estimateCost, formatCost } from "./utils/cost.js";
@@ -62,6 +80,8 @@ export type {
   PermissionPrompt,
   PermissionDecision,
   PermissionRequest,
+  RiskGate,
+  GateVerdict,
   Session,
   SessionMetadata,
   ConversationMessage,

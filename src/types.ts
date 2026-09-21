@@ -72,6 +72,11 @@ export interface PermissionContext {
    * Defaults to a prompt on process.stdin.
    */
   prompt?: PermissionPrompt;
+  /**
+   * Optional filter consulted before asking the user, to answer the easy
+   * cases without a prompt. Off by default.
+   */
+  gate?: RiskGate;
 }
 
 export type PermissionDecision = "allow" | "deny" | "always-allow" | "always-deny";
@@ -90,6 +95,28 @@ export interface PermissionRequest {
   toolName: string;
   input: Record<string, unknown>;
   description: string;
+}
+
+/**
+ * Decides a call that already resolved to "ask", so that the user only sees
+ * the ones worth seeing.
+ *
+ * A gate is consulted *after* the static rules, never instead of them, and it
+ * is never asked about a call the rules already settled — so it cannot widen
+ * what runs, only narrow what gets asked about. Anything it is unsure of, and
+ * every way it can fail, comes back as "ask".
+ */
+export type RiskGate = (request: PermissionRequest) => Promise<GateVerdict>;
+
+export interface GateVerdict {
+  action: PermissionMode;
+  /**
+   * The probability the decision was made on, or undefined when the gate
+   * never got a usable answer out of its backend.
+   */
+  probability: number | undefined;
+  /** Short explanation, for logs and eval output. */
+  reason: string;
 }
 
 // ─────────────────────────────────────────────

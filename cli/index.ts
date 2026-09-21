@@ -36,10 +36,19 @@ import { stdin, stdout } from "node:process";
 import * as readline from "node:readline";
 import chalk from "chalk";
 import { Agent } from "../src/agent.js";
+import { AllowlistJudge } from "../src/judge/allowlist.js";
+import { createRiskGate } from "../src/judge/gate.js";
+import { LlmJudge } from "../src/judge/llm.js";
 import { PermissionPresets, parseDecision } from "../src/permissions/index.js";
 import { SessionManager } from "../src/session/manager.js";
 import { globalRegistry, registerBuiltinTools } from "../src/tools/index.js";
-import type { AgentUsage, ModelId, PermissionContext, PermissionPrompt } from "../src/types.js";
+import type {
+  AgentUsage,
+  ModelId,
+  PermissionContext,
+  PermissionPrompt,
+  RiskGate,
+} from "../src/types.js";
 
 registerBuiltinTools();
 
@@ -114,10 +123,20 @@ class LineReader {
 
 type PermissionPreset = "allow-all" | "ask" | "read-only";
 
+/** Which judge answers the risk question, or "off" to always ask. */
+type GateBackend = "off" | "allowlist" | "llm";
+
+const GATE_BACKENDS: GateBackend[] = ["off", "allowlist", "llm"];
+
+function isGateBackend(value: string | undefined): value is GateBackend {
+  return value !== undefined && (GATE_BACKENDS as string[]).includes(value);
+}
+
 interface CliOptions {
   model: ModelId;
   cwd: string;
   preset: PermissionPreset;
+  gate: GateBackend;
   prompt: string | undefined;
   resume: string | undefined;
   maxTurns: number;
@@ -128,6 +147,7 @@ function parseArgs(argv: string[]): CliOptions {
     model: (process.env.AGENT_MODEL as ModelId | undefined) ?? "claude-opus-5",
     cwd: process.cwd(),
     preset: "ask",
+    gate: "off",
     prompt: undefined,
     resume: undefined,
     maxTurns: 20,
@@ -172,6 +192,18 @@ function parseArgs(argv: string[]): CliOptions {
       case "--read-only":
         opts.preset = "read-only";
         break;
+      case "--gate": {
+        // Optional value: bare --gate takes the offline backend, which is
+        // the one that needs no key and no network.
+        const value = argv[i + 1];
+        if (isGateBackend(value)) {
+          opts.gate = value;
+          i++;
+        } else {
+          opts.gate = "allowlist";
+        }
+        break;
+      }
       case "-h":
       case "--help":
         printUsage();
@@ -185,6 +217,24 @@ function parseArgs(argv: string[]): CliOptions {
   }
 
   return opts;
+}
+
+/**
+ * Build the risk gate, or return undefined to keep asking about everything.
+ *
+ * Built once per REPL rather than per turn, so that a backend which has
+ * already discovered its endpoint will not return logprobs does not
+ * rediscover it — and re-warn about it — on every prompt.
+ */
+function resolveGate(backend: GateBackend): RiskGate | undefined {
+  switch (backend) {
+    case "off":
+      return undefined;
+    case "allowlist":
+      return createRiskGate({ backend: new AllowlistJudge() });
+    case "llm":
+      return createRiskGate({ backend: new LlmJudge() });
+  }
 }
 
 function resolvePreset(preset: PermissionPreset): Partial<PermissionContext> {
@@ -214,6 +264,8 @@ ${chalk.bold("Options")}
       --allow-all        Never ask before running a tool
       --ask              Ask before Bash / Write / Edit (default)
       --read-only        Deny Bash / Write / Edit outright
+      --gate [backend]   Let a judge clear the easy "ask" cases
+                         (allowlist = offline, default; llm = needs a key)
   -h, --help             Show this help
 
 ${chalk.bold("Slash commands (REPL)")}
@@ -225,6 +277,7 @@ ${chalk.bold("Slash commands (REPL)")}
   /new                   Start a fresh session
   /model [id]            Show or change the model
   /permissions <preset>  allow-all | ask | read-only
+  /gate [backend]        off | allowlist | llm
   /cwd [path]            Show or change the working directory
   /exit                  Quit
 `);
@@ -322,10 +375,13 @@ class ReplState {
   model: ModelId;
   cwd: string;
   preset: PermissionPreset;
+  gateBackend: GateBackend;
   maxTurns: number;
   sessionId: string | undefined;
   /** Left undefined in one-shot mode, where the default stdin prompt is fine. */
   prompt: PermissionPrompt | undefined;
+  /** Undefined when the gate is off; rebuilt only when the backend changes. */
+  private gate: RiskGate | undefined;
 
   turns = 0;
   totalInputTokens = 0;
@@ -336,9 +392,23 @@ class ReplState {
     this.model = opts.model;
     this.cwd = opts.cwd;
     this.preset = opts.preset;
+    this.gateBackend = opts.gate;
     this.maxTurns = opts.maxTurns;
     this.sessionId = opts.resume;
     this.prompt = undefined;
+    this.gate = resolveGate(opts.gate);
+  }
+
+  /** Swap the judge, reporting failure rather than silently running without one. */
+  setGateBackend(backend: GateBackend): boolean {
+    try {
+      this.gate = resolveGate(backend);
+      this.gateBackend = backend;
+      return true;
+    } catch (err) {
+      console.log(chalk.red(err instanceof Error ? err.message : String(err)));
+      return false;
+    }
   }
 
   /**
@@ -353,6 +423,7 @@ class ReplState {
       permissions: {
         ...resolvePreset(this.preset),
         ...(this.prompt ? { prompt: this.prompt } : {}),
+        ...(this.gate ? { gate: this.gate } : {}),
       },
       persistSessions: true,
       stream: true,
@@ -477,6 +548,18 @@ async function handleCommand(input: string, state: ReplState): Promise<boolean> 
       }
       return true;
 
+    case "gate":
+      if (isGateBackend(arg)) {
+        if (state.setGateBackend(arg)) {
+          console.log(chalk.green(`Risk gate set to ${arg}.`));
+        }
+      } else {
+        console.log(
+          `Risk gate: ${chalk.cyan(state.gateBackend)} ${chalk.gray("(off | allowlist | llm)")}`,
+        );
+      }
+      return true;
+
     case "cwd":
       if (arg) {
         state.cwd = arg;
@@ -519,7 +602,10 @@ async function repl(state: ReplState): Promise<void> {
   state.prompt = replPrompt(reader);
 
   console.log(
-    chalk.bold("agent-app") + chalk.gray(` · ${state.model} · ${state.preset} · ${state.cwd}`),
+    chalk.bold("agent-app") +
+      chalk.gray(
+        ` · ${state.model} · ${state.preset}${state.gateBackend === "off" ? "" : `+gate:${state.gateBackend}`} · ${state.cwd}`,
+      ),
   );
   console.log(chalk.gray("Type a prompt, or /help for commands. Ctrl+C to quit.\n"));
 

@@ -6,6 +6,7 @@ import type {
   PermissionMode,
   PermissionPrompt,
   PermissionRequest,
+  RiskGate,
 } from "../types.js";
 import { logger } from "../utils/logger.js";
 
@@ -16,15 +17,18 @@ import { logger } from "../utils/logger.js";
 export class PermissionSystem {
   private context: PermissionContext;
   private prompt: PermissionPrompt;
+  private gate: RiskGate | undefined;
 
   constructor(context?: Partial<PermissionContext>) {
-    // `prompt` is kept off `this.context` so that getContext() — which is
-    // handed to every tool as ToolContext.permissions — stays plain data.
+    // `prompt` and `gate` are kept off `this.context` so that getContext() —
+    // which is handed to every tool as ToolContext.permissions — stays plain
+    // data.
     this.context = {
       defaultMode: context?.defaultMode ?? "allow",
       rules: context?.rules ?? [],
     };
     this.prompt = context?.prompt ?? stdinPrompt;
+    this.gate = context?.gate;
   }
 
   /**
@@ -44,8 +48,37 @@ export class PermissionSystem {
         return false;
 
       case "ask":
-        return this.promptUser(request);
+        return this.askOrGate(request);
     }
+  }
+
+  /**
+   * The "ask" path, with an optional gate in front of the user.
+   *
+   * The gate is deliberately downstream of `resolveMode`: a call the rules
+   * already allowed never pays for a judge, and a call the rules denied is
+   * not something a judge gets to reopen.
+   */
+  private async askOrGate(request: PermissionRequest): Promise<boolean> {
+    if (this.gate) {
+      const verdict = await this.gate(request);
+
+      switch (verdict.action) {
+        case "allow":
+          logger.debug(`Risk gate allowed ${request.toolName} — ${verdict.reason}`);
+          return true;
+
+        case "deny":
+          logger.warn(`Risk gate denied ${request.toolName} — ${verdict.reason}`);
+          return false;
+
+        case "ask":
+          logger.debug(`Risk gate deferred ${request.toolName} — ${verdict.reason}`);
+          break;
+      }
+    }
+
+    return this.promptUser(request);
   }
 
   private resolveMode(toolName: string): PermissionMode {
@@ -85,6 +118,12 @@ export class PermissionSystem {
   update(update: Partial<PermissionContext>): void {
     if (update.defaultMode !== undefined) this.context.defaultMode = update.defaultMode;
     if (update.rules) this.context.rules = [...update.rules, ...this.context.rules];
+    if (update.gate !== undefined) this.gate = update.gate;
+  }
+
+  /** Install or remove the risk gate. Pass undefined to go back to always asking. */
+  setGate(gate: RiskGate | undefined): void {
+    this.gate = gate;
   }
 
   getContext(): PermissionContext {

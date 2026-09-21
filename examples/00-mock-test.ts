@@ -14,6 +14,10 @@ import { FileEditTool } from "../src/tools/file-edit.js";
 import { GlobTool } from "../src/tools/glob.js";
 import { GrepTool } from "../src/tools/grep.js";
 import { PermissionSystem, PermissionPresets } from "../src/permissions/index.js";
+import { AllowlistJudge } from "../src/judge/allowlist.js";
+import { createRiskGate, RISK_QUESTIONS } from "../src/judge/gate.js";
+import { UNKNOWN_PROBABILITY } from "../src/judge/types.js";
+import type { JudgeBackend, JudgeState, NoulAnswer, NoulQuestion } from "../src/judge/types.js";
 import { SessionManager } from "../src/session/manager.js";
 import { estimateCost, formatCost } from "../src/utils/cost.js";
 import type { ToolContext } from "../src/types.js";
@@ -236,9 +240,187 @@ check("getContext() 返回规则副本", () => {
 });
 
 // ─────────────────────────────────────────────
-// 4. Session Manager
+// 4. Risk Gate
 // ─────────────────────────────────────────────
-section("4. Session Manager");
+section("4. Risk Gate");
+
+// A backend that answers every question with the same number, and counts how
+// often it was asked — enough to test the gate's own logic without a model.
+function fakeJudge(probability: number) {
+  const backend = {
+    name: "fake",
+    calls: 0,
+    async noul(_state: JudgeState, questions: NoulQuestion[]): Promise<NoulAnswer[]> {
+      backend.calls++;
+      return questions.map((q) => ({ id: q.id, probability }));
+    },
+  };
+  return backend;
+}
+
+/** A prompt that records being reached instead of touching stdin. */
+function recordingPrompt() {
+  const record = { asked: 0, prompt: async () => { record.asked++; return "deny" as const; } };
+  return record;
+}
+
+await checkAsync("静态规则 allow 时不询问判断层", async () => {
+  const judge = fakeJudge(0.99);
+  const perm = new PermissionSystem({
+    defaultMode: "allow",
+    gate: createRiskGate({ backend: judge }),
+  });
+  const allowed = await perm.check({ toolName: "Bash", input: { command: "ls" }, description: "ls" });
+  if (!allowed) throw new Error("应该放行");
+  if (judge.calls !== 0) throw new Error(`判断层被调用了 ${judge.calls} 次，应该是 0`);
+});
+
+await checkAsync("静态规则 deny 时不询问判断层", async () => {
+  const judge = fakeJudge(0.0);
+  const perm = new PermissionSystem({
+    ...PermissionPresets.readOnly(),
+    gate: createRiskGate({ backend: judge }),
+  });
+  const allowed = await perm.check({ toolName: "Bash", input: { command: "ls" }, description: "ls" });
+  if (allowed) throw new Error("deny 规则不该被判断层推翻");
+  if (judge.calls !== 0) throw new Error(`判断层被调用了 ${judge.calls} 次，应该是 0`);
+});
+
+await checkAsync("低于阈值时自动放行，不打扰用户", async () => {
+  const asker = recordingPrompt();
+  const perm = new PermissionSystem({
+    defaultMode: "ask",
+    prompt: asker.prompt,
+    gate: createRiskGate({ backend: fakeJudge(0.01), autoAllowBelow: 0.05 }),
+  });
+  const allowed = await perm.check({ toolName: "Bash", input: { command: "ls" }, description: "ls" });
+  if (!allowed) throw new Error("应该自动放行");
+  if (asker.asked !== 0) throw new Error("不应该问用户");
+});
+
+await checkAsync("高于阈值时落回询问用户", async () => {
+  const asker = recordingPrompt();
+  const perm = new PermissionSystem({
+    defaultMode: "ask",
+    prompt: asker.prompt,
+    gate: createRiskGate({ backend: fakeJudge(0.9), autoAllowBelow: 0.05 }),
+  });
+  await perm.check({ toolName: "Bash", input: { command: "rm -rf /" }, description: "rm" });
+  if (asker.asked !== 1) throw new Error(`应该问用户 1 次，实际 ${asker.asked} 次`);
+});
+
+await checkAsync("默认不自动拒绝（denyAbove 关闭）", async () => {
+  const asker = recordingPrompt();
+  const perm = new PermissionSystem({
+    defaultMode: "ask",
+    prompt: asker.prompt,
+    gate: createRiskGate({ backend: fakeJudge(1.0) }),
+  });
+  await perm.check({ toolName: "Bash", input: { command: "rm -rf /" }, description: "rm" });
+  if (asker.asked !== 1) throw new Error("最危险的调用也该让用户自己看到");
+});
+
+// The four fail-closed paths. Each one is a way the judge can stop working
+// without anything else noticing, which is the failure worth testing.
+const failingBackends: [string, JudgeBackend][] = [
+  ["后端抛错", { name: "throws", async noul() { throw new Error("boom"); } }],
+  [
+    "后端超时",
+    {
+      name: "hangs",
+      async noul() {
+        await new Promise((r) => setTimeout(r, 200));
+        return [];
+      },
+    },
+  ],
+  [
+    "概率越界",
+    {
+      name: "out-of-range",
+      async noul(_s: JudgeState, qs: NoulQuestion[]) {
+        return qs.map((q) => ({ id: q.id, probability: -1 }));
+      },
+    },
+  ],
+  [
+    "漏答一个问题",
+    {
+      name: "partial",
+      async noul(_s: JudgeState, qs: NoulQuestion[]) {
+        return qs.slice(1).map((q) => ({ id: q.id, probability: 0 }));
+      },
+    },
+  ],
+];
+
+for (const [label, backend] of failingBackends) {
+  await checkAsync(`${label}时落回询问用户（fail closed）`, async () => {
+    const asker = recordingPrompt();
+    const perm = new PermissionSystem({
+      defaultMode: "ask",
+      prompt: asker.prompt,
+      gate: createRiskGate({ backend, timeoutMs: 50 }),
+    });
+    const allowed = await perm.check({
+      toolName: "Bash",
+      input: { command: "rm -rf /" },
+      description: "rm",
+    });
+    if (allowed) throw new Error("判断层失效时绝不能放行");
+    if (asker.asked !== 1) throw new Error("应该落回用户");
+  });
+}
+
+await checkAsync("AllowlistJudge 放行只读命令", async () => {
+  const judge = new AllowlistJudge();
+  const answers = await judge.noul({ tool: "Bash", command: "git log --oneline -5" }, [
+    ...RISK_QUESTIONS,
+  ]);
+  if (answers.length !== RISK_QUESTIONS.length) throw new Error("每个问题都要有答案");
+  if (answers.some((a) => a.probability > 0.05)) throw new Error("只读命令应判为安全");
+});
+
+check("AllowlistJudge 拦住拼接、危险 flag 和凭据路径", () => {
+  const judge = new AllowlistJudge();
+  const mustReject = [
+    "ls; rm -rf /",
+    "git status && rm -rf .git",
+    'grep -rn "$(rm -rf /)" .',
+    "echo pwned > src/agent.ts",
+    'find . -name "*.ts" -delete',
+    "sed -i 's/a/b/g' src/agent.ts",
+    "cat ~/.ssh/id_rsa",
+    "git push --force origin main",
+  ];
+  for (const command of mustReject) {
+    if (judge.inspect(command).safe) throw new Error(`不该放行: ${command}`);
+  }
+  console.log(chalk.gray(`    ${mustReject.length} 条危险命令全部拦住`));
+});
+
+await checkAsync("AllowlistJudge 对不认识的问题不瞎答", async () => {
+  const judge = new AllowlistJudge();
+  const answers = await judge.noul({ tool: "Bash", command: "ls" }, [
+    { id: "is-the-user-happy", ask: "?" },
+  ]);
+  if (answers[0]?.probability !== UNKNOWN_PROBABILITY) {
+    throw new Error(`应该返回 UNKNOWN，实际 ${answers[0]?.probability}`);
+  }
+});
+
+await checkAsync("非 Bash 工具时 AllowlistJudge 退回 UNKNOWN", async () => {
+  const judge = new AllowlistJudge();
+  const answers = await judge.noul({ tool: "Write", path: "src/agent.ts" }, [...RISK_QUESTIONS]);
+  if (answers.some((a) => a.probability !== UNKNOWN_PROBABILITY)) {
+    throw new Error("它只懂 shell 命令，别的应该说不知道");
+  }
+});
+
+// ─────────────────────────────────────────────
+// 5. Session Manager
+// ─────────────────────────────────────────────
+section("5. Session Manager");
 
 const tempSessionDir = path.join(os.tmpdir(), "agent_sessions_" + Date.now());
 
@@ -274,9 +456,9 @@ await checkAsync("列出所有会话", async () => {
 });
 
 // ─────────────────────────────────────────────
-// 5. Cost Calculator
+// 6. Cost Calculator
 // ─────────────────────────────────────────────
-section("5. Cost Calculator");
+section("6. Cost Calculator");
 
 check("claude-opus-5 费用计算", () => {
   const cost = estimateCost("claude-opus-5", 1000, 500);
