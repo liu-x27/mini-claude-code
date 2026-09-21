@@ -23,7 +23,7 @@ function escHtml(s: string) {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
-export function MessageBubble({ msg }: { msg: Message }) {
+export function MessageBubble({ msg, modelLabel }: { msg: Message; modelLabel?: string }) {
   const [showThinking, setShowThinking] = useState(false);
   const isUser = msg.role === "user";
 
@@ -46,7 +46,10 @@ export function MessageBubble({ msg }: { msg: Message }) {
         paddingLeft: isUser ? 0 : 2,
         paddingRight: isUser ? 2 : 0,
       }}>
-        {isUser ? "You" : "Claude"}
+        {/* The label follows the configured model: the server talks to any
+            Anthropic- or OpenAI-compatible endpoint, so a hardcoded "Claude"
+            is wrong as often as it is right. */}
+        {isUser ? "You" : (modelLabel ?? "Assistant")}
       </div>
 
       {/* Bubble */}

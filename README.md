@@ -26,6 +26,19 @@ cp .env.example .env    # add your ANTHROPIC_API_KEY
 npm run cli
 ```
 
+The risk gate (below) is the one part that needs a second provider, because it
+reads token probabilities and the Anthropic Messages API does not return them.
+A local Ollama does, needs no key, and costs nothing:
+
+```bash
+ollama pull llama3.1:8b
+AGENT_JUDGE_API_KEY=ollama AGENT_JUDGE_BASE_URL=http://localhost:11434/v1 AGENT_JUDGE_MODEL=llama3.1:8b npm run cli -- --ask --gate
+```
+
+Without it, `--gate allowlist` is offline and needs nothing — it just clears
+less. `npm run eval:risk-gate` runs on the allow-list and needs no setup at
+all, so the numbers below are reproducible from a clean clone.
+
 A real session, lightly trimmed:
 
 ```
@@ -67,8 +80,27 @@ The web UI is the same framework behind an Express server with SSE streaming:
 
 ```bash
 npm run server     # :3001
-npm run client     # :5173
+npm run client     # :5174
 ```
+
+The gate runs there too, and the browser is where its behaviour is easiest to
+see: a cleared call carries the probability it cleared on, and a deferred one
+becomes a card with the judge's own reasoning on it.
+
+![A safe command cleared without a prompt](docs/gate-auto-approved.png)
+
+`wc -l src/agent.ts` scored 0.074 and ran — the green pill is the only trace,
+because the gate's entire effect is a prompt that does not appear.
+
+![A destructive command deferred to the user](docs/gate-needs-approval.png)
+
+`rm -rf dist` scored 0.995 and stopped. The card names the command rather than
+the tool, since "Bash" is not a decision anyone can make and `rm -rf dist` is,
+and it shows what deferred it: a call held at 0.21 deserves a different glance
+from one held at 0.995.
+
+Both images come from a real run against a real judge — `docs/` is regenerated
+by driving the live UI, not by mocking the props.
 
 Or use it as a library:
 
@@ -114,7 +146,12 @@ and `disallowedTools`.
 **Permissions** (`src/permissions/`) resolve each call to `allow`, `ask`, or `deny` by
 most-specific-rule-wins, with presets for read-only and ask-before-dangerous. `ask` goes
 through an injectable `PermissionPrompt`, so the caller decides how to reach the user —
-the CLI reuses its own line reader, and a server can route the question anywhere.
+the CLI reuses its own line reader, and the server sends the question out over the SSE
+stream and parks the tool call on a promise until a separate `POST /api/permission`
+answers it. That second path is why the prompt is injectable at all; until recently the
+server ran `defaultMode: "allow"` and executed every tool call without asking, which was
+the one configuration the CLI never offered. It fails closed on a timeout and on the tab
+closing.
 
 **Sessions** (`src/session/`) are JSON transcripts under `~/.agent-app/sessions`, with
 token and cost totals. Passing `resumeSessionId` replays one into the next run.
@@ -573,7 +610,15 @@ The risk gate's own logic — narrowing only, and the four fail-closed paths —
 mock suite, and `npm run eval:risk-gate` runs its default backend offline. Both
 end-to-end paths have been watched in a real session, with the loop on one provider and
 the judge on another: `wc -l src/agent.ts` cleared at P=0.036 without a prompt,
-`rm -rf dist` deferred at P=0.995. The held-out set has been run once, and both backends
+`rm -rf dist` deferred at P=0.995.
+
+The browser approval round-trip — SSE question out, `POST /api/permission` back, tool
+call parked in between — has been exercised by hand in both directions, including the
+keyboard deny, and is **not** in the mock suite: it needs a live server, a live model and
+a live judge. Worth one note from watching it, because it is the kind of thing a
+single-command demo hides: denied `rm -rf dist`, the agent immediately retried as
+`rmdir /s /q dist`, and the judge deferred that too at 0.817. The allow-list models no
+Windows commands at all and would have had nothing to say about it. The held-out set has been run once, and both backends
 had false allows on it at the settings the dev set chose. The logprob path works against Ollama and has never
 run against a hosted provider that returns logprobs, so whether those probabilities
 agree is unknown. The gate has not been used for long enough for anyone to know whether

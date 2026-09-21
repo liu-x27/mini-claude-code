@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { ToolCall } from "../hooks/useChat";
+import { GateBadge } from "./GateBadge";
 
 const ICONS: Record<string, string> = {
   Bash: "⚡", Read: "📄", Write: "✏️", Edit: "🔧",
@@ -25,6 +26,7 @@ export function ToolCallCard({ tc }: { tc: ToolCall }) {
         <span className="tool-icon">{icon}</span>
         <span className="tool-name">{tc.name}</span>
         <span className="tool-preview">{preview}</span>
+        <GateBadge gate={tc.gate} approvedByUser={tc.approvedBy === "user"} />
         <span className="tool-badge" style={{ background: statusBg, color: statusColor }}>
           {tc.status === "running" ? "running…" : tc.status === "error" ? "error" : `${tc.durationMs}ms`}
         </span>

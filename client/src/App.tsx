@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { useChat } from "./hooks/useChat";
+import { ApprovalCard } from "./components/ApprovalCard";
 import { MessageBubble } from "./components/MessageBubble";
 
 const ALL_TOOLS = ["Bash", "Read", "Write", "Edit", "Glob", "Grep", "WebFetch"];
@@ -29,7 +30,7 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [hasApiKey, setHasApiKey] = useState(false);
 
-  const { state, send, stop, clear } = useChat(apiKey, baseURL, model, enabledTools);
+  const { state, send, stop, clear, respond } = useChat(apiKey, baseURL, model, enabledTools);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -354,7 +355,12 @@ export default function App() {
                 </div>
               </div>
             ) : (
-              state.messages.map(msg => <MessageBubble key={msg.id} msg={msg} />)
+              <>
+                {state.messages.map(msg => <MessageBubble key={msg.id} msg={msg} modelLabel={model} />)}
+                {state.pendingApproval && (
+                  <ApprovalCard approval={state.pendingApproval} onRespond={respond} />
+                )}
+              </>
             )}
             <div ref={bottomRef} />
           </div>

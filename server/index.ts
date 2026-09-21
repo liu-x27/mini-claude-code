@@ -4,12 +4,66 @@ import { randomUUID } from "node:crypto";
 import Anthropic from "@anthropic-ai/sdk";
 import OpenAI from "openai";
 import { registerBuiltinTools, globalRegistry } from "../src/tools/index.js";
-import { PermissionSystem } from "../src/permissions/index.js";
+import { AllowlistJudge } from "../src/judge/allowlist.js";
+import { createRiskGate } from "../src/judge/gate.js";
+import { LlmJudge } from "../src/judge/llm.js";
+import { PermissionPresets, PermissionSystem } from "../src/permissions/index.js";
 import { SessionManager } from "../src/session/manager.js";
 import { estimateCost } from "../src/utils/cost.js";
-import type { ConversationMessage } from "../src/types.js";
+import type {
+  ConversationMessage,
+  PermissionDecision,
+  PermissionRequest,
+  RiskGate,
+} from "../src/types.js";
 
 registerBuiltinTools();
+
+// ─────────────────────────────────────────────
+// The risk gate, and the approvals it cannot decide
+// ─────────────────────────────────────────────
+
+/**
+ * Build the gate once, at boot, and probe it.
+ *
+ * The CLI does the same thing. It matters more here: a browser tab gives no
+ * hint that a judge is silently deferring everything, so a judge that cannot
+ * answer has to be reported at startup and then removed.
+ */
+async function buildGate(): Promise<{ gate: RiskGate | undefined; label: string }> {
+  const wantsLlm = !!(process.env["AGENT_JUDGE_API_KEY"] || process.env["AGENT_JUDGE_BASE_URL"]);
+
+  if (wantsLlm) {
+    try {
+      const judge = new LlmJudge();
+      const capability = await judge.probe();
+      if (capability.logprobs) {
+        return { gate: createRiskGate({ backend: judge }), label: judge.name };
+      }
+      console.warn(`   judge ${judge.name} returned no logprobs (${capability.detail})`);
+    } catch (err) {
+      console.warn(`   judge unavailable: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    console.warn("   falling back to the offline allow-list");
+  }
+
+  return { gate: createRiskGate({ backend: new AllowlistJudge() }), label: "allowlist" };
+}
+
+const { gate, label: gateLabel } = await buildGate();
+
+/**
+ * Approvals waiting on a human, keyed by an id the browser echoes back.
+ *
+ * This is what `PermissionPrompt` being injectable was for. The framework
+ * never assumes the question can be asked on stdin — the CLI answers it from
+ * its own line reader, and here it goes out over the SSE stream and comes
+ * back as a separate POST, with the tool call parked on a promise in between.
+ */
+const pendingApprovals = new Map<string, (decision: PermissionDecision) => void>();
+
+/** Long enough for a human to read a command, short enough to not leak. */
+const APPROVAL_TIMEOUT_MS = 120_000;
 
 const app = express();
 app.use(cors());
@@ -41,6 +95,31 @@ app.get("/api/sessions", async (_req, res) => {
 // ─────────────────────────────────────────────
 app.delete("/api/sessions/:id", async (req, res) => {
   await sessions.delete(req.params["id"] ?? "");
+  res.json({ ok: true });
+});
+
+// ─────────────────────────────────────────────
+// POST /api/permission  (answer a parked tool call)
+// ─────────────────────────────────────────────
+app.post("/api/permission", (req, res) => {
+  const { id, decision } = req.body as { id?: string; decision?: PermissionDecision };
+  const resolve = id ? pendingApprovals.get(id) : undefined;
+
+  if (!resolve || !id) {
+    // Already answered, timed out, or never existed. Not an error worth
+    // failing the request over — the tool call has moved on either way.
+    res.status(404).json({ ok: false, reason: "no pending approval with that id" });
+    return;
+  }
+
+  const valid: PermissionDecision[] = ["allow", "deny", "always-allow", "always-deny"];
+  if (!decision || !valid.includes(decision)) {
+    res.status(400).json({ ok: false, reason: `decision must be one of ${valid.join(", ")}` });
+    return;
+  }
+
+  pendingApprovals.delete(id);
+  resolve(decision);
   res.json({ ok: true });
 });
 
@@ -102,7 +181,62 @@ app.post("/api/chat", async (req, res) => {
       allowedTools?.length ? allowedTools : undefined,
       []
     );
-    const permissions = new PermissionSystem({ defaultMode: "allow" });
+    // Ask before Bash/Write/Edit, let the gate clear the easy ones, and send
+    // whatever is left to the browser. The previous behaviour here was
+    // `defaultMode: "allow"` — the web UI ran every tool call without asking
+    // and without saying so, which is the one configuration the CLI does not
+    // offer.
+    const permissions = new PermissionSystem({
+      ...PermissionPresets.askDangerous(),
+      // Wrapped rather than called a second time: the verdict is already
+      // computed inside check(), and asking again would double the judge's
+      // latency and cost on every tool call just to tell the browser about
+      // it. Its whole effect otherwise is a prompt that does not appear.
+      ...(gate
+        ? {
+            gate: async (request: PermissionRequest) => {
+              const verdict = await gate(request);
+              send("gate_verdict", {
+                id: currentToolUseId,
+                action: verdict.action,
+                probability: verdict.probability,
+                reason: verdict.reason,
+                judge: gateLabel,
+              });
+              return verdict;
+            },
+          }
+        : {}),
+      prompt: (request: PermissionRequest) =>
+        new Promise<PermissionDecision>((resolve) => {
+          const id = randomUUID();
+          let settled = false;
+          const settle = (decision: PermissionDecision) => {
+            if (settled) return;
+            settled = true;
+            pendingApprovals.delete(id);
+            clearTimeout(timer);
+            resolve(decision);
+          };
+
+          // Fail closed on silence, and on the tab going away.
+          const timer = setTimeout(() => settle("deny"), APPROVAL_TIMEOUT_MS);
+          res.once("close", () => settle("deny"));
+
+          pendingApprovals.set(id, settle);
+          send("permission_request", {
+            id,
+            toolName: request.toolName,
+            input: request.input,
+            description: request.description,
+          });
+        }),
+    });
+
+    // Which tool call the gate is currently being asked about. Safe because
+    // runTools walks the batch sequentially; if it ever runs them in
+    // parallel, the gate wrapper needs the id threaded through instead.
+    let currentToolUseId: string | undefined;
 
     const systemPrompt = [
       "You are a helpful AI assistant with access to tools.",
@@ -129,7 +263,12 @@ app.post("/api/chat", async (req, res) => {
           continue;
         }
 
-        const allowed = await permissions.check({ toolName: tool.name, input: tc.input, description: tool.summarize(tc.input) });
+        currentToolUseId = tc.id;
+        const allowed = await permissions.check({
+          toolName: tool.name,
+          input: tc.input,
+          description: tool.summarize(tc.input),
+        });
         if (!allowed) {
           results.push({ toolUseId: tc.id, content: "Permission denied", isError: true });
           send("tool_end", { id: tc.id, name: tc.name, error: "Permission denied", durationMs: 0 });
@@ -366,5 +505,6 @@ const PORT = Number(process.env["PORT"] ?? 3001);
 app.listen(PORT, () => {
   console.log(`\n🚀 Agent API server running at http://localhost:${PORT}`);
   console.log(`   API Key: ${process.env["ANTHROPIC_API_KEY"] ? "✓ set" : "✗ not set (enter in UI)"}`);
-  console.log(`   Tools: ${globalRegistry.names().join(", ")}\n`);
+  console.log(`   Tools: ${globalRegistry.names().join(", ")}`);
+  console.log(`   Risk gate: ${gate ? gateLabel : "off"} — asks before Bash / Write / Edit\n`);
 });
