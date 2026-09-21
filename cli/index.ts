@@ -137,6 +137,16 @@ interface CliOptions {
   cwd: string;
   preset: PermissionPreset;
   gate: GateBackend;
+  /**
+   * Auto-allow threshold for the gate. Undefined means the library default.
+   *
+   * Exposed as a flag because the right value turned out to be a property of
+   * the judge, not of the gate: measured on `eval/risk-gate`, the default
+   * 0.05 clears 24/35 safe commands with the allow-list and only 6/35 with
+   * llama3.1:8b, which is systematically pessimistic. Whoever changes the
+   * judge has to re-measure this.
+   */
+  gateThreshold: number | undefined;
   prompt: string | undefined;
   resume: string | undefined;
   maxTurns: number;
@@ -148,6 +158,7 @@ function parseArgs(argv: string[]): CliOptions {
     cwd: process.cwd(),
     preset: "ask",
     gate: "off",
+    gateThreshold: undefined,
     prompt: undefined,
     resume: undefined,
     maxTurns: 20,
@@ -204,6 +215,15 @@ function parseArgs(argv: string[]): CliOptions {
         }
         break;
       }
+      case "--gate-threshold": {
+        const value = Number(next());
+        if (!Number.isFinite(value) || value <= 0 || value >= 1) {
+          console.error(chalk.red(`--gate-threshold must be in (0, 1), got ${value}`));
+          process.exit(1);
+        }
+        opts.gateThreshold = value;
+        break;
+      }
       case "-h":
       case "--help":
         printUsage();
@@ -226,14 +246,15 @@ function parseArgs(argv: string[]): CliOptions {
  * already discovered its endpoint will not return logprobs does not
  * rediscover it — and re-warn about it — on every prompt.
  */
-function resolveGate(backend: GateBackend): RiskGate | undefined {
+function resolveGate(backend: GateBackend, autoAllowBelow?: number): RiskGate | undefined {
+  const tuning = autoAllowBelow === undefined ? {} : { autoAllowBelow };
   switch (backend) {
     case "off":
       return undefined;
     case "allowlist":
-      return createRiskGate({ backend: new AllowlistJudge() });
+      return createRiskGate({ backend: new AllowlistJudge(), ...tuning });
     case "llm":
-      return createRiskGate({ backend: new LlmJudge() });
+      return createRiskGate({ backend: new LlmJudge(), ...tuning });
   }
 }
 
@@ -266,6 +287,9 @@ ${chalk.bold("Options")}
       --read-only        Deny Bash / Write / Edit outright
       --gate [backend]   Let a judge clear the easy "ask" cases
                          (allowlist = offline, default; llm = needs a key)
+      --gate-threshold <n>
+                         Auto-allow below this P(destructive). Model-specific
+                         - measure with npm run eval:risk-gate before changing
   -h, --help             Show this help
 
 ${chalk.bold("Slash commands (REPL)")}
@@ -376,6 +400,7 @@ class ReplState {
   cwd: string;
   preset: PermissionPreset;
   gateBackend: GateBackend;
+  gateThreshold: number | undefined;
   maxTurns: number;
   sessionId: string | undefined;
   /** Left undefined in one-shot mode, where the default stdin prompt is fine. */
@@ -393,16 +418,17 @@ class ReplState {
     this.cwd = opts.cwd;
     this.preset = opts.preset;
     this.gateBackend = opts.gate;
+    this.gateThreshold = opts.gateThreshold;
     this.maxTurns = opts.maxTurns;
     this.sessionId = opts.resume;
     this.prompt = undefined;
-    this.gate = resolveGate(opts.gate);
+    this.gate = resolveGate(opts.gate, opts.gateThreshold);
   }
 
   /** Swap the judge, reporting failure rather than silently running without one. */
   setGateBackend(backend: GateBackend): boolean {
     try {
-      this.gate = resolveGate(backend);
+      this.gate = resolveGate(backend, this.gateThreshold);
       this.gateBackend = backend;
       return true;
     } catch (err) {
