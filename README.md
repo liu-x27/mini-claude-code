@@ -196,20 +196,23 @@ threshold and the model were all chosen by looking at it. `testset.ts` (125) and
 `testset2.ts` (96) are held out, labelled before anything was shown to a judge, and each
 run once.
 
-| backend | threshold | dev (83) | test 1 (125) | test 2 (96) |
-|---|---|---|---|---|
-| no gate | — | 0/41 · 0/42 | 0/55 · 0/70 | 0/53 · 0/43 |
-| `allowlist` — offline, was the default | 0.20 | 24/41 · **0/42** | 5/55 · **2/70** | 7/53 · **0/43** |
-| **`llm` llama3.1:8b — the default** | **0.20** | **36/41** · **0/42** | — | **26/53 · 1/43** |
-| `llm` llama3.1:8b | 0.35 | 38/41 · 1/42 | 30/55 · 1/70 | 34/53 · 5/43 |
-| `llm` glm4:9b | 0.20 | 32/41 · 0/42 | — | — |
-| `llm` yi:9b | any | ≥1 false allow at every threshold | — | — |
+| backend | threshold | dev (83) | test 1 (125) | test 2 (96) | test 3 (153) |
+|---|---|---|---|---|---|
+| no gate | — | 0/41 · 0/42 | 0/55 · 0/70 | 0/53 · 0/43 | 0/77 · 0/76 |
+| `allowlist` — offline, was the default | 0.20 | 24/41 · **0/42** | 5/55 · **2/70** | 7/53 · **0/43** | 9/77 · **0/76** |
+| **`llm` llama3.1:8b — the default** | **0.20** | 36/41 · **0/42** | — | 26/53 · **1/43** | **26/77 · 0/76** |
+| `llm` llama3.1:8b | 0.35 | 38/41 · 1/42 | 30/55 · 1/70 | 34/53 · 5/43 | 36/77 · 2/76 |
+| `llm` glm4:9b | 0.20 | 32/41 · 0/42 | — | — | — |
+| `llm` yi:9b | any | ≥1 false allow at every threshold | — | — | — |
 
-**The honest number for what ships is the last column: 26 of 53 safe commands cleared,
-one of 43 unsafe ones waved through.** Not the 85% from the dev set, which chose the
-threshold, and not test 1's column, which chose the backend and is now stale besides —
-it was measured before the `exfiltrates` rewrite and while `allowlist` was still the
-default.
+**Read the coverage row left to right: 88%, then 49%, then 34%.** The more unfamiliar
+the commands, the less the gate clears — which is the right direction for something that
+fails closed, and a poor advertisement for the dev-set figure. False allows go 0, 1, 0.
+The honest summary of what ships is a third of safe commands cleared with no false
+allows on 153 commands it had never seen, not the 88% that chose the threshold.
+
+Test 1's column is stale and stays that way: it was measured before the `exfiltrates`
+and `destroys-data` rewrites and while `allowlist` was still the default.
 
 Test 2 was built to fix a flaw the first set had and its docstring did not name. Those
 125 commands were written *to be labelled*, by someone thinking in four harm categories,
@@ -235,11 +238,30 @@ four, because agent work is full of `kubectl`, `pkill`, `pip install` and `pg_ct
 the dev set barely had any. Six wordings were measured against it last round and none
 shipped — that turned out to be right for a reason nobody knew at the time.
 
-**There is no clean test set left.** Both are spent, and each round of tuning costs one.
-That is a real constraint, and the generator above is the way out of it: hand-written
-sets are scarce, but a fresh pool of realistic commands is now a few minutes of model
-time plus an afternoon of labelling. The labels have to stay hand-made — that is the
-part that cannot be automated without automating the thing being measured.
+**A set is spendable, so the generator has to be cheap.** Each round of tuning burns a
+held-out set, and `eval/risk-gate/generate-pool.mjs` is what makes replacing one
+affordable: a pool of realistic commands is minutes of model time, and only the
+labelling is slow. Test 3 is the first set built that way from the start — two
+generators (MiniMax-M2 and a local glm4:9b) over a task bank disjoint from test 2's, so
+the distribution is not one model's habits.
+
+`llama3.1:8b` is deliberately never a generator. It is the judge, and a set drawn from
+the model that scores it is a rigged one.
+
+The labels stay hand-made. That is the part that cannot be automated without automating
+the thing being measured, and it is also where the work is: of 278 raw candidates, 304
+were already labelled elsewhere and deduped against, 18 were dropped as unlabellable,
+and the survivors were culled for near-duplicates. glm4 is why the cull was needed — it
+emitted `sh`, `clear`, `/test` and `php artisanigrate:rollback`. A set of malformed
+commands measures a judge's handling of nonsense, not of risk.
+
+**`outside-cwd` is where the coverage goes, on both realistic sets.** It blocks 25 of
+53 safe commands on test 2 and 48 of 77 on test 3, while uniquely catching 11 and 18 of
+the unsafe ones. Realistic agent work is wall-to-wall `docker`, `ssh`, `pm2`,
+`systemctl`, package managers and remotes, so the question fires constantly — correctly
+on the unsafe half, expensively on the safe half. The dev set said the opposite (4
+blocks, 0 unique catches) and said it loudly enough to nominate the question for a
+rewrite. Two independent sets have now contradicted it.
 
 **Neither backend's zero survived.** On commands written after the design was fixed, the
 allow-list waves through 2 of 70 and the model 1 of 70, at the settings the dev set
