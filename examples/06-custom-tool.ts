@@ -100,7 +100,7 @@ registry.register(new DatabaseQueryTool());
 
 const agent = new Agent(
   {
-    model: "claude-opus-4-6",
+    model: "claude-opus-5",
     systemPrompt: "You are a data analyst assistant. Query the database to answer questions.",
     persistSessions: false,
     allowedTools: ["QueryDatabase"],

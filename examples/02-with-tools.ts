@@ -10,7 +10,7 @@
 import { Agent } from "../src/index.js";
 
 const agent = new Agent({
-  model: "claude-opus-4-6",
+  model: "claude-opus-5",
   cwd: process.cwd(),
   allowedTools: ["Read", "Glob", "Grep"],  // Read-only tools
   persistSessions: true,

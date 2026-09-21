@@ -11,7 +11,7 @@ import { Agent } from "../src/index.js";
 import chalk from "chalk";
 
 const agent = new Agent({
-  model: "claude-opus-4-6",
+  model: "claude-opus-5",
   thinking: { type: "adaptive" },
   effort: "high",
   allowedTools: ["WebFetch"],

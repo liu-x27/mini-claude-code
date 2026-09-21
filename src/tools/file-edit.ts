@@ -60,7 +60,8 @@ export class FileEditTool extends Tool<FileEditInput> {
     if (count === 0) {
       return {
         type: "error",
-        message: "old_string not found in file. Check your string matches exactly (including whitespace and indentation).",
+        message:
+          "old_string not found in file. Check your string matches exactly (including whitespace and indentation).",
       };
     }
 

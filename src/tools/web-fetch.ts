@@ -70,7 +70,7 @@ export class WebFetchTool extends Tool<WebFetchInput> {
 
     // Truncate
     if (text.length > maxLen) {
-      text = text.slice(0, maxLen) + `\n\n[Truncated at ${maxLen} chars. Total: ${text.length}]`;
+      text = `${text.slice(0, maxLen)}\n\n[Truncated at ${maxLen} chars. Total: ${text.length}]`;
     }
 
     return { type: "success", output: text };

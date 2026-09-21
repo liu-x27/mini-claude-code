@@ -5,9 +5,11 @@ import type Anthropic from "@anthropic-ai/sdk";
 // ─────────────────────────────────────────────
 
 export type ModelId =
+  | "claude-opus-5"
+  | "claude-sonnet-5"
+  | "claude-haiku-4-5"
   | "claude-opus-4-6"
   | "claude-sonnet-4-6"
-  | "claude-haiku-4-5"
   | (string & {});
 
 export type ThinkingConfig =
@@ -39,9 +41,7 @@ export interface JsonSchemaProperty {
 }
 
 /** Result returned from a tool execution */
-export type ToolResult =
-  | { type: "success"; output: string }
-  | { type: "error"; message: string };
+export type ToolResult = { type: "success"; output: string } | { type: "error"; message: string };
 
 /** Execution context passed to each tool */
 export interface ToolContext {
@@ -67,7 +67,24 @@ export interface PermissionRule {
 export interface PermissionContext {
   defaultMode: PermissionMode;
   rules: PermissionRule[];
+  /**
+   * How to ask the user when a tool resolves to "ask" mode.
+   * Defaults to a prompt on process.stdin.
+   */
+  prompt?: PermissionPrompt;
 }
+
+export type PermissionDecision = "allow" | "deny" | "always-allow" | "always-deny";
+
+/**
+ * Asks the user to decide on a single tool call.
+ *
+ * Injectable because process.stdin is the wrong channel for most hosts: the
+ * HTTP server would block a request handler on the server process's stdin,
+ * and a REPL already owns a readline interface that a second one would
+ * compete with for keystrokes.
+ */
+export type PermissionPrompt = (request: PermissionRequest) => Promise<PermissionDecision>;
 
 export interface PermissionRequest {
   toolName: string;
@@ -110,7 +127,7 @@ export interface Session {
 // ─────────────────────────────────────────────
 
 export interface AgentConfig {
-  /** Claude model to use (default: claude-opus-4-6) */
+  /** Claude model to use (default: claude-opus-5) */
   model?: ModelId;
 
   /** Custom system prompt (appended to base prompt) */

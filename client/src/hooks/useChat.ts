@@ -4,9 +4,9 @@ export interface ToolCall {
   id: string;
   name: string;
   input: Record<string, unknown>;
-  result?: string;
-  error?: string;
-  durationMs?: number;
+  result?: string | undefined;
+  error?: string | undefined;
+  durationMs?: number | undefined;
   status: "running" | "done" | "error";
 }
 

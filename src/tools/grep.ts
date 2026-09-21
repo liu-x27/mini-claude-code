@@ -68,9 +68,7 @@ export class GrepTool extends Tool<GrepInput> {
   };
 
   override async execute(input: GrepInput, context: ToolContext): Promise<ToolResult> {
-    const searchPath = input.path
-      ? path.resolve(context.cwd, input.path)
-      : context.cwd;
+    const searchPath = input.path ? path.resolve(context.cwd, input.path) : context.cwd;
 
     // Try rg first, fall back to Node.js implementation
     const rgPath = await this.findRg();
@@ -88,7 +86,7 @@ export class GrepTool extends Tool<GrepInput> {
     rgPath: string,
     input: GrepInput,
     searchPath: string,
-    context: ToolContext
+    context: ToolContext,
   ): Promise<ToolResult> {
     const headLimit = input.head_limit ?? 250;
     const normalized = searchPath.replace(/\\/g, "/");
@@ -239,10 +237,10 @@ export class GrepTool extends Tool<GrepInput> {
     const candidates = [
       "rg",
       "C:/Program Files/ripgrep/rg.exe",
-      `${process.env["APPDATA"]}/ripgrep/rg.exe`,
-      `${process.env["LOCALAPPDATA"]}/ripgrep/rg.exe`,
+      `${process.env.APPDATA}/ripgrep/rg.exe`,
+      `${process.env.LOCALAPPDATA}/ripgrep/rg.exe`,
       // Claude Code bundled rg
-      `${process.env["APPDATA"]}/npm/node_modules/@anthropic-ai/claude-code/vendor/rg.exe`,
+      `${process.env.APPDATA}/npm/node_modules/@anthropic-ai/claude-code/vendor/rg.exe`,
     ];
 
     for (const candidate of candidates) {

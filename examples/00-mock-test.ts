@@ -165,6 +165,7 @@ await checkAsync("FileEditTool: 精确字符串替换", async () => {
   if (editResult.type !== "success") throw new Error("编辑失败: " + editResult.message);
 
   const readResult = await readTool.execute({ file_path: filePath }, { ...ctx, cwd: tempDir });
+  if (readResult.type !== "success") throw new Error("读取失败: " + readResult.message);
   if (!readResult.output.includes("Hello Agent")) throw new Error("替换结果不对");
 });
 
@@ -243,14 +244,14 @@ const tempSessionDir = path.join(os.tmpdir(), "agent_sessions_" + Date.now());
 
 await checkAsync("创建新会话", async () => {
   const sm = new SessionManager(tempSessionDir);
-  const session = await sm.create({ model: "claude-opus-4-6", cwd: "/tmp", turns: 0, totalInputTokens: 0, totalOutputTokens: 0, totalCost: 0 });
+  const session = await sm.create({ model: "claude-opus-5", cwd: "/tmp", turns: 0, totalInputTokens: 0, totalOutputTokens: 0, totalCost: 0 });
   if (!session.metadata.sessionId) throw new Error("sessionId 为空");
   if (session.messages.length !== 0) throw new Error("新会话消息应为空");
 });
 
 await checkAsync("保存并加载会话", async () => {
   const sm = new SessionManager(tempSessionDir);
-  const session = await sm.create({ model: "claude-opus-4-6", cwd: "/tmp", turns: 0, totalInputTokens: 0, totalOutputTokens: 0, totalCost: 0 });
+  const session = await sm.create({ model: "claude-opus-5", cwd: "/tmp", turns: 0, totalInputTokens: 0, totalOutputTokens: 0, totalCost: 0 });
   await sm.save(session);
 
   const loaded = await sm.load(session.metadata.sessionId);
@@ -260,7 +261,7 @@ await checkAsync("保存并加载会话", async () => {
 
 await checkAsync("appendMessages 追加消息", async () => {
   const sm = new SessionManager(tempSessionDir);
-  let session = await sm.create({ model: "claude-opus-4-6", cwd: "/tmp", turns: 0, totalInputTokens: 0, totalOutputTokens: 0, totalCost: 0 });
+  let session = await sm.create({ model: "claude-opus-5", cwd: "/tmp", turns: 0, totalInputTokens: 0, totalOutputTokens: 0, totalCost: 0 });
   session = sm.appendMessages(session, [{ role: "user", content: "hello" }]);
   if (session.messages.length !== 1) throw new Error(`期望 1 条消息，得到 ${session.messages.length}`);
 });
@@ -277,8 +278,8 @@ await checkAsync("列出所有会话", async () => {
 // ─────────────────────────────────────────────
 section("5. Cost Calculator");
 
-check("claude-opus-4-6 费用计算", () => {
-  const cost = estimateCost("claude-opus-4-6", 1000, 500);
+check("claude-opus-5 费用计算", () => {
+  const cost = estimateCost("claude-opus-5", 1000, 500);
   const expected = (1000 / 1_000_000) * 5.0 + (500 / 1_000_000) * 25.0;
   if (Math.abs(cost - expected) > 0.0000001) throw new Error(`期望 ${expected}，得到 ${cost}`);
   console.log(chalk.gray(`    1K in + 500 out = ${formatCost(cost)}`));

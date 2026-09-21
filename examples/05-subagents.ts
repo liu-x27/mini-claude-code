@@ -61,7 +61,7 @@ globalRegistry.register(new CalculatorTool());
 
 async function runSubagent(name: string, task: string, tools: string[]): Promise<string> {
   const agent = new Agent({
-    model: "claude-opus-4-6",
+    model: "claude-opus-5",
     allowedTools: tools,
     persistSessions: false,
     systemPrompt: `You are a specialized subagent: ${name}. Be concise and direct.`,
@@ -111,7 +111,7 @@ console.log();
 console.log(chalk.blue("=== Orchestrator Synthesis ===\n"));
 
 const orchestrator = new Agent({
-  model: "claude-opus-4-6",
+  model: "claude-opus-5",
   allowedTools: [],
   persistSessions: false,
 });

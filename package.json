@@ -7,8 +7,10 @@
   "types": "./dist/index.d.ts",
   "scripts": {
     "build": "tsc",
+    "typecheck": "tsc -p tsconfig.check.json",
     "server": "npx tsx server/index.ts",
     "client": "vite client",
+    "cli": "npx tsx cli/index.ts",
     "dev": "npx tsx server/index.ts",
     "example:basic": "npx tsx examples/01-basic.ts",
     "example:tools": "npx tsx examples/02-with-tools.ts",
@@ -16,11 +18,11 @@
     "example:multi-turn": "npx tsx examples/04-multi-turn.ts",
     "example:subagents": "npx tsx examples/05-subagents.ts",
     "test": "npx tsx examples/00-mock-test.ts",
-    "lint": "biome lint src/",
-    "format": "biome format --write src/"
+    "lint": "biome lint src/ cli/",
+    "format": "biome format --write src/ cli/"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.55.0",
+    "@anthropic-ai/sdk": "^0.127.0",
     "chalk": "^5.3.0",
     "cors": "^2.8.6",
     "express": "^5.2.1",
@@ -38,7 +40,11 @@
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.1",
+    "tsx": "^4.23.15",
     "typescript": "^5.6.0",
     "vite": "^8.0.3"
+  },
+  "bin": {
+    "agent-app": "./cli/index.ts"
   }
 }

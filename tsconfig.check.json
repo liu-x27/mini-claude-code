@@ -1,0 +1,13 @@
+{
+  // Type-check everything, including the entry points that tsconfig.json
+  // leaves out because they are run through tsx rather than compiled to dist/.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": ".",
+    "lib": ["ES2022", "DOM"],
+    "jsx": "react-jsx"
+  },
+  "include": ["src/**/*", "cli/**/*", "server/**/*", "client/**/*", "examples/**/*"],
+  "exclude": ["node_modules", "dist"]
+}

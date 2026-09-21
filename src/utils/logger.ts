@@ -71,6 +71,4 @@ class Logger {
 }
 
 /** Singleton logger — import and use directly */
-export const logger = new Logger(
-  (process.env["AGENT_LOG_LEVEL"] as LogLevel | undefined) ?? "info"
-);
+export const logger = new Logger((process.env.AGENT_LOG_LEVEL as LogLevel | undefined) ?? "info");

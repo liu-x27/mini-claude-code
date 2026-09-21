@@ -48,7 +48,7 @@ app.delete("/api/sessions/:id", async (req, res) => {
 // POST /api/chat  (SSE streaming)
 // ─────────────────────────────────────────────
 app.post("/api/chat", async (req, res) => {
-  const { message, sessionId, apiKey, baseURL, model = "claude-opus-4-6", allowedTools } = req.body as {
+  const { message, sessionId, apiKey, baseURL, model = "claude-opus-5", allowedTools } = req.body as {
     message: string;
     sessionId?: string;
     apiKey?: string;
@@ -96,6 +96,7 @@ app.post("/api/chat", async (req, res) => {
     // Append user message
     const userMsg: ConversationMessage = { role: "user", content: message };
     session = sessions.appendMessages(session, [userMsg]);
+    const activeSessionId = session.metadata.sessionId;
 
     const tools = globalRegistry.resolve(
       allowedTools?.length ? allowedTools : undefined,
@@ -138,7 +139,7 @@ app.post("/api/chat", async (req, res) => {
         const start = Date.now();
         const result = await tool.execute(tc.input, {
           cwd: process.cwd(),
-          sessionId: session.metadata.sessionId,
+          sessionId: activeSessionId,
           agentId: "web",
           permissions: permissions.getContext(),
         });
@@ -209,7 +210,7 @@ app.post("/api/chat", async (req, res) => {
           function: {
             name: t.name,
             description: t.description,
-            parameters: t.inputSchema as Record<string, unknown>,
+            parameters: t.inputSchema as unknown as Record<string, unknown>,
           },
         }));
 

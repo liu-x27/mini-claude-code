@@ -1,7 +1,7 @@
+import { randomUUID } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { randomUUID } from "node:crypto";
 import type { ConversationMessage, Session, SessionMetadata } from "../types.js";
 import { logger } from "../utils/logger.js";
 
@@ -15,11 +15,13 @@ export class SessionManager {
   private sessionDir: string;
 
   constructor(sessionDir?: string) {
-    this.sessionDir = sessionDir ?? process.env["AGENT_SESSION_DIR"] ?? DEFAULT_SESSION_DIR;
+    this.sessionDir = sessionDir ?? process.env.AGENT_SESSION_DIR ?? DEFAULT_SESSION_DIR;
   }
 
   /** Create a new session with a fresh ID */
-  async create(metadata: Omit<SessionMetadata, "sessionId" | "createdAt" | "updatedAt">): Promise<Session> {
+  async create(
+    metadata: Omit<SessionMetadata, "sessionId" | "createdAt" | "updatedAt">,
+  ): Promise<Session> {
     const now = new Date().toISOString();
     const session: Session = {
       metadata: {
@@ -64,10 +66,7 @@ export class SessionManager {
   }
 
   /** Update session metadata (usage stats, title, etc.) */
-  async updateMetadata(
-    session: Session,
-    update: Partial<SessionMetadata>
-  ): Promise<Session> {
+  async updateMetadata(session: Session, update: Partial<SessionMetadata>): Promise<Session> {
     const updated: Session = {
       ...session,
       metadata: { ...session.metadata, ...update, updatedAt: new Date().toISOString() },
@@ -100,11 +99,11 @@ export class SessionManager {
             } catch {
               // Skip corrupted files
             }
-          })
+          }),
       );
 
       return metas.sort(
-        (a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
+        (a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
       );
     } catch {
       return [];

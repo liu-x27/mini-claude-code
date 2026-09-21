@@ -17,7 +17,7 @@ import chalk from "chalk";
 console.log(chalk.blue("=== Turn 1: Starting new conversation ===\n"));
 
 const agent1 = new Agent({
-  model: "claude-opus-4-6",
+  model: "claude-opus-5",
   allowedTools: [],
   persistSessions: true,
   systemPrompt: "You are a friendly tutor who teaches step by step.",
@@ -42,7 +42,7 @@ console.log(chalk.gray(`\n[Session: ${result1.sessionId}]\n`));
 console.log(chalk.blue("\n=== Turn 2: Resuming session (new Agent instance) ===\n"));
 
 const agent2 = new Agent({
-  model: "claude-opus-4-6",
+  model: "claude-opus-5",
   allowedTools: [],
   persistSessions: true,
   resumeSessionId: result1.sessionId,  // Resume the previous session

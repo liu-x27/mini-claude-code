@@ -1,5 +1,9 @@
 import type { Tool } from "./base.js";
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+
+// The registry holds tools with unrelated input types, so the element type has
+// to be the top of the Tool<T> family. `Tool<unknown>` will not do: T appears
+// in the parameter position of execute(), so Tool<X> is not assignable to it.
+// biome-ignore lint/suspicious/noExplicitAny: heterogeneous container
 type AnyTool = Tool<any>;
 
 /**

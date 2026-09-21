@@ -1,7 +1,13 @@
 import * as readline from "node:readline/promises";
-import type { PermissionContext, PermissionMode, PermissionRequest } from "../types.js";
-import { logger } from "../utils/logger.js";
 import chalk from "chalk";
+import type {
+  PermissionContext,
+  PermissionDecision,
+  PermissionMode,
+  PermissionPrompt,
+  PermissionRequest,
+} from "../types.js";
+import { logger } from "../utils/logger.js";
 
 /**
  * Evaluates whether a tool call is permitted, based on configured rules.
@@ -9,12 +15,16 @@ import chalk from "chalk";
  */
 export class PermissionSystem {
   private context: PermissionContext;
+  private prompt: PermissionPrompt;
 
   constructor(context?: Partial<PermissionContext>) {
+    // `prompt` is kept off `this.context` so that getContext() — which is
+    // handed to every tool as ToolContext.permissions — stays plain data.
     this.context = {
       defaultMode: context?.defaultMode ?? "allow",
       rules: context?.rules ?? [],
     };
+    this.prompt = context?.prompt ?? stdinPrompt;
   }
 
   /**
@@ -50,47 +60,24 @@ export class PermissionSystem {
   }
 
   private async promptUser(request: PermissionRequest): Promise<boolean> {
-    console.log(
-      chalk.yellow("\n⚠  Permission required") +
-        chalk.white(` for ${chalk.bold(request.toolName)}`)
-    );
-    if (request.description) {
-      console.log(chalk.gray(`   ${request.description}`));
-    }
+    const decision = await this.prompt(request);
 
-    const rl = readline.createInterface({
-      input: process.stdin,
-      output: process.stdout,
-    });
+    switch (decision) {
+      case "allow":
+        return true;
 
-    try {
-      const answer = await rl.question(
-        chalk.yellow("   Allow? [y/N/a (always)/d (deny always)]: ")
-      );
-      const trimmed = answer.trim().toLowerCase();
+      case "deny":
+        return false;
 
-      switch (trimmed) {
-        case "y":
-        case "yes":
-          return true;
+      case "always-allow":
+        this.context.rules.unshift({ tool: request.toolName, mode: "allow" });
+        logger.info(`Always allowing tool: ${request.toolName}`);
+        return true;
 
-        case "a":
-        case "always":
-          // Add an allow rule for this tool so we don't ask again
-          this.context.rules.unshift({ tool: request.toolName, mode: "allow" });
-          logger.info(`Always allowing tool: ${request.toolName}`);
-          return true;
-
-        case "d":
-          this.context.rules.unshift({ tool: request.toolName, mode: "deny" });
-          logger.info(`Always denying tool: ${request.toolName}`);
-          return false;
-
-        default:
-          return false;
-      }
-    } finally {
-      rl.close();
+      case "always-deny":
+        this.context.rules.unshift({ tool: request.toolName, mode: "deny" });
+        logger.info(`Always denying tool: ${request.toolName}`);
+        return false;
     }
   }
 
@@ -102,6 +89,50 @@ export class PermissionSystem {
 
   getContext(): PermissionContext {
     return { ...this.context, rules: [...this.context.rules] };
+  }
+}
+
+/**
+ * Default "ask" prompt: a one-shot readline interface on process.stdin.
+ *
+ * Only safe when nothing else is reading stdin. Hosts that already own the
+ * terminal (or have no terminal at all) should pass their own
+ * PermissionPrompt instead.
+ */
+export const stdinPrompt: PermissionPrompt = async (request) => {
+  console.log(
+    chalk.yellow("\n⚠  Permission required") + chalk.white(` for ${chalk.bold(request.toolName)}`),
+  );
+  if (request.description) {
+    console.log(chalk.gray(`   ${request.description}`));
+  }
+
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+
+  try {
+    const answer = await rl.question(chalk.yellow("   Allow? [y/N/a (always)/d (deny always)]: "));
+    return parseDecision(answer);
+  } finally {
+    rl.close();
+  }
+};
+
+/** Map a raw answer to a decision. Anything unrecognised denies once. */
+export function parseDecision(answer: string): PermissionDecision {
+  switch (answer.trim().toLowerCase()) {
+    case "y":
+    case "yes":
+      return "allow";
+    case "a":
+    case "always":
+      return "always-allow";
+    case "d":
+      return "always-deny";
+    default:
+      return "deny";
   }
 }
 

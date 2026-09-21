@@ -5,11 +5,11 @@ import { MessageBubble } from "./components/MessageBubble";
 const ALL_TOOLS = ["Bash", "Read", "Write", "Edit", "Glob", "Grep", "WebFetch"];
 
 const PROVIDER_PRESETS = [
-  { label: "Anthropic", baseURL: "", models: ["claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5"] },
+  { label: "Anthropic", baseURL: "", models: ["claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5"] },
   { label: "OpenAI", baseURL: "https://api.openai.com/v1", models: ["gpt-4o", "gpt-4o-mini", "o3-mini"] },
   { label: "DeepSeek", baseURL: "https://api.deepseek.com/v1", models: ["deepseek-chat", "deepseek-reasoner"] },
   { label: "Groq", baseURL: "https://api.groq.com/openai/v1", models: ["llama-3.3-70b-versatile", "mixtral-8x7b-32768"] },
-  { label: "OpenRouter", baseURL: "https://openrouter.ai/api/v1", models: ["anthropic/claude-opus-4-6", "openai/gpt-4o", "google/gemini-2.0-flash-001"] },
+  { label: "OpenRouter", baseURL: "https://openrouter.ai/api/v1", models: ["anthropic/claude-opus-5", "openai/gpt-4o", "google/gemini-2.0-flash-001"] },
 ];
 
 const QUICK_PROMPTS = [
@@ -22,7 +22,7 @@ const QUICK_PROMPTS = [
 export default function App() {
   const [apiKey, setApiKey] = useState(() => localStorage.getItem("apiKey") ?? "");
   const [baseURL, setBaseURL] = useState(() => localStorage.getItem("baseURL") ?? "");
-  const [model, setModel] = useState(() => localStorage.getItem("model") ?? "claude-opus-4-6");
+  const [model, setModel] = useState(() => localStorage.getItem("model") ?? "claude-opus-5");
   const [input, setInput] = useState("");
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [enabledTools, setEnabledTools] = useState<string[]>(ALL_TOOLS);

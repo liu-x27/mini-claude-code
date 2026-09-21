@@ -6,7 +6,7 @@
  * import { Agent } from "agent-app";
  *
  * const agent = new Agent({
- *   model: "claude-opus-4-6",
+ *   model: "claude-opus-5",
  *   allowedTools: ["Read", "Glob", "Grep"],
  * });
  *
@@ -34,7 +34,12 @@ export { WebFetchTool } from "./tools/web-fetch.js";
 export { SessionManager } from "./session/manager.js";
 
 // Permissions
-export { PermissionSystem, PermissionPresets } from "./permissions/index.js";
+export {
+  PermissionSystem,
+  PermissionPresets,
+  stdinPrompt,
+  parseDecision,
+} from "./permissions/index.js";
 
 // Utils
 export { logger } from "./utils/logger.js";
@@ -54,6 +59,9 @@ export type {
   PermissionContext,
   PermissionMode,
   PermissionRule,
+  PermissionPrompt,
+  PermissionDecision,
+  PermissionRequest,
   Session,
   SessionMetadata,
   ConversationMessage,

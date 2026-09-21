@@ -1,4 +1,10 @@
 import Anthropic from "@anthropic-ai/sdk";
+import chalk from "chalk";
+import { PermissionSystem } from "./permissions/index.js";
+import { SessionManager } from "./session/manager.js";
+import type { Tool } from "./tools/base.js";
+import { globalRegistry, registerBuiltinTools } from "./tools/index.js";
+import type { ToolRegistry } from "./tools/registry.js";
 import type {
   AgentConfig,
   AgentEvent,
@@ -9,19 +15,13 @@ import type {
   ToolCallRecord,
   ToolContext,
 } from "./types.js";
-import { PermissionSystem } from "./permissions/index.js";
-import { SessionManager } from "./session/manager.js";
-import { globalRegistry, registerBuiltinTools } from "./tools/index.js";
-import type { Tool } from "./tools/base.js";
-import type { ToolRegistry } from "./tools/registry.js";
 import { estimateCost } from "./utils/cost.js";
 import { logger } from "./utils/logger.js";
-import chalk from "chalk";
 
 // Ensure built-in tools are registered
 registerBuiltinTools();
 
-const DEFAULT_MODEL = "claude-opus-4-6";
+const DEFAULT_MODEL = "claude-opus-5";
 const DEFAULT_MAX_TURNS = 20;
 const DEFAULT_MAX_TOKENS = 16_000;
 
@@ -40,7 +40,7 @@ If a task requires multiple steps, plan them out before executing.`;
  *
  * @example
  * ```ts
- * const agent = new Agent({ model: "claude-opus-4-6" });
+ * const agent = new Agent({ model: "claude-opus-5" });
  * const result = await agent.run("What files are in /tmp?");
  * console.log(result.text);
  * ```
@@ -55,11 +55,11 @@ export class Agent {
 
   constructor(config: AgentConfig = {}, registry?: ToolRegistry) {
     this.client = new Anthropic({
-      apiKey: process.env["ANTHROPIC_API_KEY"],
+      apiKey: process.env.ANTHROPIC_API_KEY,
     });
 
     this.config = {
-      model: config.model ?? (process.env["AGENT_MODEL"] as AgentConfig["model"]) ?? DEFAULT_MODEL,
+      model: config.model ?? (process.env.AGENT_MODEL as AgentConfig["model"]) ?? DEFAULT_MODEL,
       systemPrompt: config.systemPrompt ?? "",
       cwd: config.cwd ?? process.cwd(),
       maxTurns: config.maxTurns ?? DEFAULT_MAX_TURNS,
@@ -152,14 +152,15 @@ export class Agent {
       // Handle tool_use
       if (response.stop_reason === "tool_use") {
         const toolUseBlocks = response.content.filter(
-          (b): b is Anthropic.ToolUseBlock => b.type === "tool_use"
+          (b): b is Anthropic.ToolUseBlock => b.type === "tool_use",
         );
 
-        const toolResults = await this.executeTools(
-          toolUseBlocks,
-          toolCalls,
-          { cwd: this.config.cwd, sessionId: session.metadata.sessionId, agentId: "main", permissions: this.permissions.getContext() }
-        );
+        const toolResults = await this.executeTools(toolUseBlocks, toolCalls, {
+          cwd: this.config.cwd,
+          sessionId: session.metadata.sessionId,
+          agentId: "main",
+          permissions: this.permissions.getContext(),
+        });
 
         // Append tool results as user message
         messages.push({ role: "user", content: toolResults });
@@ -178,7 +179,10 @@ export class Agent {
 
     // Persist session
     if (this.config.persistSessions) {
-      const updatedSession = this.sessions.appendMessages(session, messages.slice(session.messages.length));
+      const updatedSession = this.sessions.appendMessages(
+        session,
+        messages.slice(session.messages.length),
+      );
       const finalSession = await this.sessions.updateMetadata(updatedSession, {
         turns: session.metadata.turns + turn,
         totalInputTokens: session.metadata.totalInputTokens + usageAccum.inputTokens,
@@ -217,8 +221,8 @@ export class Agent {
         const u = event.result.usage;
         console.log(
           chalk.gray(
-            `\n\n[${event.result.turns} turn(s), ${u.inputTokens + u.outputTokens} tokens, $${u.estimatedCostUsd.toFixed(5)}]`
-          )
+            `\n\n[${event.result.turns} turn(s), ${u.inputTokens + u.outputTokens} tokens, $${u.estimatedCostUsd.toFixed(5)}]`,
+          ),
         );
       }
     });
@@ -235,7 +239,7 @@ export class Agent {
   private async callApi(
     messages: Anthropic.MessageParam[],
     system: string,
-    tools: Tool[]
+    tools: Tool[],
   ): Promise<Anthropic.Message> {
     const anthropicTools = tools.map((t) => t.toAnthropicTool());
 
@@ -259,7 +263,7 @@ export class Agent {
   private async callApiStreaming(
     messages: Anthropic.MessageParam[],
     system: string,
-    tools: Tool[]
+    tools: Tool[],
   ): Promise<Anthropic.Message> {
     const anthropicTools = tools.map((t) => t.toAnthropicTool());
 
@@ -299,12 +303,12 @@ export class Agent {
   private async executeTools(
     toolUseBlocks: Anthropic.ToolUseBlock[],
     toolCallRecords: ToolCallRecord[],
-    context: ToolContext
+    context: ToolContext,
   ): Promise<Anthropic.ToolResultBlockParam[]> {
     const results: Anthropic.ToolResultBlockParam[] = [];
 
     // Execute tools (concurrently within limit)
-    const maxConcurrent = Number(process.env["AGENT_MAX_CONCURRENT_TOOLS"] ?? 4);
+    const maxConcurrent = Number(process.env.AGENT_MAX_CONCURRENT_TOOLS ?? 4);
     const batches = chunk(toolUseBlocks, maxConcurrent);
 
     for (const batch of batches) {
@@ -347,7 +351,12 @@ export class Agent {
           const durationMs = Date.now() - start;
 
           toolCallRecords.push({ toolName: tool.name, input, result: toolResult, durationMs });
-          await this.emit({ type: "tool_end", toolName: tool.name, result: toolResult, durationMs });
+          await this.emit({
+            type: "tool_end",
+            toolName: tool.name,
+            result: toolResult,
+            durationMs,
+          });
 
           const content =
             toolResult.type === "success" ? toolResult.output : `Error: ${toolResult.message}`;
@@ -358,7 +367,7 @@ export class Agent {
             content,
             is_error: toolResult.type === "error",
           };
-        })
+        }),
       );
 
       results.push(...batchResults);
@@ -370,7 +379,7 @@ export class Agent {
   private resolveTools(): Tool[] {
     return this.registry.resolve(
       this.config.allowedTools.length > 0 ? this.config.allowedTools : undefined,
-      this.config.disallowedTools.length > 0 ? this.config.disallowedTools : undefined
+      this.config.disallowedTools.length > 0 ? this.config.disallowedTools : undefined,
     );
   }
 
@@ -407,7 +416,13 @@ export class Agent {
     const cacheCreation = u.cache_creation_input_tokens ?? 0;
     const cacheRead = u.cache_read_input_tokens ?? 0;
 
-    const cost = estimateCost(this.config.model, inputTokens, outputTokens, cacheCreation, cacheRead);
+    const cost = estimateCost(
+      this.config.model,
+      inputTokens,
+      outputTokens,
+      cacheCreation,
+      cacheRead,
+    );
 
     accum.inputTokens += inputTokens;
     accum.outputTokens += outputTokens;
