@@ -39,12 +39,14 @@ import { Agent } from "../src/agent.js";
 import { AllowlistJudge } from "../src/judge/allowlist.js";
 import { createRiskGate } from "../src/judge/gate.js";
 import { LlmJudge } from "../src/judge/llm.js";
+import { createModelRouter } from "../src/judge/router.js";
 import { PermissionPresets, parseDecision } from "../src/permissions/index.js";
 import { SessionManager } from "../src/session/manager.js";
 import { globalRegistry, registerBuiltinTools } from "../src/tools/index.js";
 import type {
   AgentUsage,
   ModelId,
+  ModelRouter,
   PermissionContext,
   PermissionPrompt,
   RiskGate,
@@ -147,6 +149,8 @@ interface CliOptions {
    * on the held-out one. Whoever changes the judge has to re-measure this.
    */
   gateThreshold: number | undefined;
+  /** When set, route between this and `model` instead of always using `model`. */
+  cheapModel: ModelId | undefined;
   prompt: string | undefined;
   resume: string | undefined;
   maxTurns: number;
@@ -159,6 +163,7 @@ function parseArgs(argv: string[]): CliOptions {
     preset: "ask",
     gate: "off",
     gateThreshold: undefined,
+    cheapModel: undefined,
     prompt: undefined,
     resume: undefined,
     maxTurns: 20,
@@ -229,6 +234,9 @@ function parseArgs(argv: string[]): CliOptions {
         opts.gateThreshold = value;
         break;
       }
+      case "--cheap-model":
+        opts.cheapModel = next() as ModelId;
+        break;
       case "-h":
       case "--help":
         printUsage();
@@ -310,6 +318,8 @@ ${chalk.bold("Options")}
       --gate-threshold <n>
                          Auto-allow below this P(destructive). Model-specific
                          - measure with npm run eval:risk-gate before changing
+      --cheap-model <id> Route each prompt between this and --model, using the
+                         same judge. Needs --gate to supply one.
   -h, --help             Show this help
 
 ${chalk.bold("Slash commands (REPL)")}
@@ -427,6 +437,8 @@ class ReplState {
   prompt: PermissionPrompt | undefined;
   /** Undefined when the gate is off; rebuilt only when the backend changes. */
   private gate: RiskGate | undefined;
+  /** Undefined unless --cheap-model asked for routing. */
+  private router: ModelRouter | undefined;
   /** The judge behind the gate, kept only so verifyGate() can probe it. */
   private judge: LlmJudge | undefined;
 
@@ -447,6 +459,18 @@ class ReplState {
     const resolved = resolveGate(opts.gate, opts.gateThreshold);
     this.gate = resolved.gate;
     this.judge = resolved.judge;
+
+    // Routing shares the gate's judge rather than opening a second one: the
+    // two questions are different, the backend answering them is not.
+    if (opts.cheapModel && resolved.judge) {
+      this.router = createModelRouter({
+        backend: resolved.judge,
+        strong: opts.model,
+        cheap: opts.cheapModel,
+      });
+    } else if (opts.cheapModel) {
+      console.log(chalk.yellow("⚠  --cheap-model needs a judge; pass --gate llm to supply one."));
+    }
   }
 
   /** Swap the judge, reporting failure rather than silently running without one. */
@@ -507,6 +531,7 @@ class ReplState {
         ...(this.prompt ? { prompt: this.prompt } : {}),
         ...(this.gate ? { gate: this.gate } : {}),
       },
+      ...(this.router ? { router: this.router } : {}),
       persistSessions: true,
       stream: true,
       ...(this.sessionId ? { resumeSessionId: this.sessionId } : {}),

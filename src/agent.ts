@@ -6,6 +6,7 @@ import type { Tool } from "./tools/base.js";
 import { globalRegistry, registerBuiltinTools } from "./tools/index.js";
 import type { ToolRegistry } from "./tools/registry.js";
 import type {
+  ModelRouter,
   AgentConfig,
   AgentEvent,
   AgentEventHandler,
@@ -47,11 +48,17 @@ If a task requires multiple steps, plan them out before executing.`;
  */
 export class Agent {
   private client: Anthropic;
-  private config: Required<AgentConfig>;
+  /**
+   * Everything with a default. `router` is deliberately not in here: it has
+   * no sensible sentinel the way "" serves for resumeSessionId, and
+   * Required<> under exactOptionalPropertyTypes cannot hold an absent value.
+   */
+  private config: Required<Omit<AgentConfig, "router">>;
   private registry: ToolRegistry;
   private permissions: PermissionSystem;
   private sessions: SessionManager;
   private eventHandlers: AgentEventHandler[] = [];
+  private router: ModelRouter | undefined;
 
   constructor(config: AgentConfig = {}, registry?: ToolRegistry) {
     this.client = new Anthropic({
@@ -77,6 +84,11 @@ export class Agent {
       stream: config.stream ?? false,
     };
 
+    // Kept off `config` because Required<AgentConfig> cannot hold an absent
+    // value under exactOptionalPropertyTypes, and there is no sensible
+    // sentinel for "no router" the way "" serves for resumeSessionId.
+    this.router = config.router;
+
     this.registry = registry ?? globalRegistry;
     this.permissions = new PermissionSystem(this.config.permissions);
     this.sessions = new SessionManager(this.config.sessionDir || undefined);
@@ -101,6 +113,7 @@ export class Agent {
   async run(prompt: string): Promise<AgentResult> {
     const tools = this.resolveTools();
     const session = await this.initSession();
+    await this.route(prompt);
 
     const messages: ConversationMessage[] = [...session.messages];
     messages.push({ role: "user", content: prompt });
@@ -374,6 +387,26 @@ export class Agent {
     }
 
     return results;
+  }
+
+  /**
+   * Let the router pick the model for this run, if one is configured.
+   *
+   * Mutates `config.model` rather than threading a per-call model through
+   * every API path, because the decision is made once per run and every call
+   * in that run should agree with it. It emits nothing: the routing event
+   * belongs to whatever installed the router, and the CLI logs it there.
+   */
+  private async route(prompt: string): Promise<void> {
+    if (!this.router) return;
+
+    const verdict = await this.router(prompt);
+    if (verdict.model !== this.config.model) {
+      logger.debug(
+        `Router chose ${verdict.model} over ${this.config.model} — ${verdict.reason}`,
+      );
+    }
+    this.config.model = verdict.model;
   }
 
   private resolveTools(): Tool[] {

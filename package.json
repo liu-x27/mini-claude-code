@@ -19,6 +19,7 @@
     "example:subagents": "npx tsx examples/05-subagents.ts",
     "test": "npx tsx examples/00-mock-test.ts",
     "eval:risk-gate": "npx tsx eval/risk-gate/run.ts",
+    "eval:routing": "npx tsx eval/routing/run.ts",
     "lint": "biome lint src/ cli/",
     "format": "biome format --write src/ cli/"
   },

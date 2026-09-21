@@ -119,6 +119,24 @@ export interface GateVerdict {
   reason: string;
 }
 
+/**
+ * Picks the model for a run, once, from the user's prompt.
+ *
+ * The gate's sibling: same backend, same fail-closed rule, pointed at cost
+ * instead of at safety. Every way it can fail resolves to the expensive
+ * model — see `createModelRouter`.
+ */
+export type ModelRouter = (prompt: string) => Promise<RouteVerdict>;
+
+export interface RouteVerdict {
+  model: ModelId;
+  /** True when the router picked the cheaper model. */
+  downgraded: boolean;
+  /** P(needs the strong model), or undefined when the judge gave no answer. */
+  probability: number | undefined;
+  reason: string;
+}
+
 // ─────────────────────────────────────────────
 // Session & Conversation
 // ─────────────────────────────────────────────
@@ -201,6 +219,15 @@ export interface AgentConfig {
 
   /** Stream output tokens as they arrive */
   stream?: boolean;
+
+  /**
+   * Optional router consulted once, before the first turn, to pick the model.
+   *
+   * Off by default. When set it overrides `model` for the whole run — see
+   * `createModelRouter`, which decides between exactly two tiers and falls
+   * back to the expensive one on any failure.
+   */
+  router?: ModelRouter;
 }
 
 export interface SubagentDefinition {

@@ -16,6 +16,7 @@ import { GrepTool } from "../src/tools/grep.js";
 import { PermissionSystem, PermissionPresets } from "../src/permissions/index.js";
 import { AllowlistJudge } from "../src/judge/allowlist.js";
 import { createRiskGate, RISK_QUESTIONS } from "../src/judge/gate.js";
+import { createModelRouter } from "../src/judge/router.js";
 import { UNKNOWN_PROBABILITY } from "../src/judge/types.js";
 import type { JudgeBackend, JudgeState, NoulAnswer, NoulQuestion } from "../src/judge/types.js";
 import { SessionManager } from "../src/session/manager.js";
@@ -479,6 +480,44 @@ await checkAsync("非 Bash 工具时 AllowlistJudge 退回 UNKNOWN", async () =>
     throw new Error("它只懂 shell 命令，别的应该说不知道");
   }
 });
+
+await checkAsync("路由器低于阈值时选便宜模型", async () => {
+  const route = createModelRouter({
+    backend: fakeJudge(0.1),
+    strong: "claude-opus-5",
+    cheap: "claude-haiku-4-5",
+  });
+  const verdict = await route("How many lines are in src/agent.ts?");
+  if (verdict.model !== "claude-haiku-4-5") throw new Error(`选了 ${verdict.model}`);
+  if (!verdict.downgraded) throw new Error("downgraded 应该为 true");
+});
+
+await checkAsync("路由器高于阈值时选强模型", async () => {
+  const route = createModelRouter({
+    backend: fakeJudge(0.9),
+    strong: "claude-opus-5",
+    cheap: "claude-haiku-4-5",
+  });
+  const verdict = await route("Refactor the permission system.");
+  if (verdict.model !== "claude-opus-5") throw new Error(`选了 ${verdict.model}`);
+  if (verdict.downgraded) throw new Error("downgraded 应该为 false");
+});
+
+// 和闸门相反的方向：闸门失效要落回"问用户"，路由器失效要落回"贵的那个"。
+// 两者都是 fail closed，只是"关"的方向由代价决定。
+for (const [label, backend] of failingBackends) {
+  await checkAsync(`${label}时路由器落回强模型（fail closed）`, async () => {
+    const route = createModelRouter({
+      backend,
+      strong: "claude-opus-5",
+      cheap: "claude-haiku-4-5",
+      timeoutMs: 50,
+    });
+    const verdict = await route("anything");
+    if (verdict.model !== "claude-opus-5") throw new Error(`选了 ${verdict.model}`);
+    if (verdict.probability !== undefined) throw new Error("失效时不该报概率");
+  });
+}
 
 // ─────────────────────────────────────────────
 // 5. Session Manager

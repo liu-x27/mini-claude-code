@@ -12,6 +12,7 @@ read in an afternoon.
    CLI (REPL)  ─┐
    Web UI      ─┼─►  Agent  ─►  Claude API
    Library     ─┘      │
+                       ├─ ModelRouter    optional — picks the tier before turn one
                        ├─ ToolRegistry   Bash · Read · Write · Edit · Glob · Grep · WebFetch
                        ├─ PermissionSystem   allow / ask / deny, per tool
                        │    └─ RiskGate      optional — clears the easy "ask" cases
@@ -127,6 +128,7 @@ console.log(result.text, result.usage.estimatedCostUsd);
 | `--allow-all` / `--ask` / `--read-only` | permission preset (default `--ask`) |
 | `--gate [backend]` | judge the `ask` cases instead of asking all of them: `llm` (default, needs logprobs) or `allowlist` (offline) |
 | `--gate-threshold <n>` | auto-allow below this P(destructive); default 0.20, model-specific — measure before changing |
+| `--cheap-model <id>` | route each prompt between this and `--model` using the same judge; needs `--gate` |
 
 In the REPL: `/help` `/tools` `/cost` `/sessions` `/resume <id>` `/new` `/model [id]`
 `/permissions <preset>` `/gate [backend]` `/cwd [path]` `/exit`.
@@ -184,7 +186,7 @@ looks, to the agent, like a tool that is broken.
 question, or answers with something that is not a probability in [0, 1] gets the user
 asked. The failure worth guarding against is not a wrong answer — the user sees that at
 the prompt and fixes it — but the judge being silently absent while the gate goes on
-reporting that everything is fine. Four of the 37 mock assertions are that path.
+reporting that everything is fine. Four of the 44 mock assertions are that path, and four more are its mirror in the router.
 
 #### What it measures
 
@@ -658,12 +660,71 @@ fixes shaped the API:
    seeds each turn with the previous turn's session id. An `Agent.continueSession()`
    would be the better fix; that is a core API change, still open.
 
+### The other half: routing
+
+The gate is one use of a decision layer. Routing is the other, and it reuses everything:
+the same backend, the same threshold shape, the same fail-closed rule. `--cheap-model`
+asks one question about the user's prompt before the loop starts and picks a model from
+the answer.
+
+```
+Router chose abab6.5s-chat over MiniMax-M2 — P(needs-strong)=0.010 < 0.2
+Risk gate allowed Bash — worst P=0.074 (exfiltrates) < 0.2
+```
+
+Two decisions, one judge, 36ms and 200ms respectively, on a request whose whole content
+was `wc -l src/agent.ts`.
+
+**Fail-closed points the other way here.** The gate's failures resolve to asking the
+user; the router's resolve to the *expensive* model. Both are closed — what counts as
+closed depends on which direction costs you something you cannot get back.
+
+**Two tiers, so the question stays a yes/no.** Jev's `Choice` primitive is the right
+shape for three or more, and `JudgeBackend` still has no `choice()` method because
+nothing has needed one. A third tier is what would earn it.
+
+**It decides once, before turn one.** Routing every turn would save more, since most
+turns are "read this tool output and continue" — but it would also hand one model's
+half-finished reasoning to another mid-conversation. That is untested and not shipped.
+
+#### What it measures, and what it cannot
+
+`npm run eval:routing` runs 40 labelled requests, 20 of each tier. The labels are mine,
+and the honest caveat is bigger than the gate's: the gate had a criterion that no model
+is involved in, while the real routing question is "would the cheap model have answered
+well enough", and settling that needs a judge to compare two outputs. Scoring a judge
+with a judge measures nothing, so this set measures agreement with my judgement instead
+and says so.
+
+| threshold | downgraded | wrong downgrades | wrong escalations |
+|---|---|---|---|
+| 0.1 | 12/40 | 1/20 | 9/20 |
+| **0.2** | **15/40** | **1/20** | **6/20** |
+| 0.3 | 20/40 | 3/20 | 3/20 |
+| 0.5 | 26/40 | 6/20 | 0/20 |
+| 0.7 | 32/40 | 12/20 | 0/20 |
+
+At 0.20 that is **30% off the bill** against all-Opus on a fixed token profile, with one
+request in twenty sent to a model I think was too small for it.
+
+The default started at 0.5, reasoned from harm asymmetry: a wrong downgrade produces a
+worse answer the user reads and can retry, unlike a false allow, so it looked like it
+could afford a loose threshold. The measurement disagreed — at 0.5 it sends 6 of 20 hard
+requests to the cheap model, including "migrate this codebase from Express to Fastify" at
+0.286 and "design a caching layer" at 0.075. llama3.1:8b's probabilities on this question
+simply sit low, and reasoning about harm does not fix a miscalibrated input.
+
+**That is the second time a threshold was reasoned wrong and measured right** — the gate
+went 0.05 → 0.20 the same way. Two for two is not a rule, but it is enough that the next
+threshold gets measured before it gets an opinion.
+
 ## Development
 
 ```bash
-npm test               # 37 assertions, mocked — no API key needed
+npm test               # 44 assertions, mocked — no API key needed
 npm run eval:risk-gate # measure the gate on the dev set — no API key needed
-npm run eval:risk-gate -- --cases test   # the held-out set; see testset.ts first
+npm run eval:risk-gate -- --cases test3  # a held-out set; read its docstring first
+npm run eval:routing   # measure the model router — needs a judge
 npm run typecheck
 npm run lint
 npm run build

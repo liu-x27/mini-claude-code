@@ -45,8 +45,10 @@ export {
 export {
   AllowlistJudge,
   LlmJudge,
+  createModelRouter,
   createRiskGate,
   RISK_QUESTIONS,
+  ROUTING_QUESTION,
   UNKNOWN_PROBABILITY,
 } from "./judge/index.js";
 export type {
@@ -54,6 +56,7 @@ export type {
   JudgeCapability,
   JudgeState,
   LlmJudgeOptions,
+  ModelRouterOptions,
   NoulAnswer,
   NoulQuestion,
   RiskGateOptions,
@@ -82,6 +85,8 @@ export type {
   PermissionRequest,
   RiskGate,
   GateVerdict,
+  ModelRouter,
+  RouteVerdict,
   Session,
   SessionMetadata,
   ConversationMessage,
