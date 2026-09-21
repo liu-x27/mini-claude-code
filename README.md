@@ -199,7 +199,7 @@ run once.
 | backend | threshold | dev (83) | test 1 (125) | test 2 (96) | test 3 (153) |
 |---|---|---|---|---|---|
 | no gate | — | 0/41 · 0/42 | 0/55 · 0/70 | 0/53 · 0/43 | 0/77 · 0/76 |
-| `allowlist` — offline, was the default | 0.20 | 24/41 · **0/42** | 5/55 · **2/70** | 7/53 · **0/43** | 9/77 · **0/76** |
+| `allowlist` — offline, was the default | 0.20 | 23/41 · **0/42** | 4/55 · **0/70** | 7/53 · **0/43** | 8/77 · **0/76** |
 | **`llm` llama3.1:8b — the default** | **0.20** | 36/41 · **0/42** | — | 26/53 · **1/43** | **26/77 · 0/76** |
 | `llm` llama3.1:8b | 0.35 | 38/41 · 1/42 | 30/55 · 1/70 | 34/53 · 5/43 | 36/77 · 2/76 |
 | `llm` glm4:9b | 0.20 | 32/41 · 0/42 | — | — | — |
@@ -274,14 +274,26 @@ test set uses `rg`, `awk`, `cut`, `docker`, `terraform`, `cargo`, `md5sum` and a
 other programs that are simply not on a list of 35, so it declines them all. Which is
 the correct behaviour and nearly worthless behaviour at the same time.
 
-The two commands it did clear wrongly are worth naming, because they break the property
-the whole design rests on. `cat ~/.docker/config.json` clears because `.docker` is not in
-`SECRET_PATH_MARKERS`; `grep -r api_key . --include=*.json` clears because it names no
-secret path at all — it searches for them. Both are the secret-path check failing, and
-that check is a deny-list living inside an allow-list. The file's own docstring argues
-that a deny-list's failure mode is missing the case you did not think of; it then
-contains one. Adding `.docker` to the list would fix these two commands and not the
-class, so nothing has been changed in response — see below.
+It used to clear two commands wrongly, and both came from the same defect.
+`cat ~/.docker/config.json` cleared because `.docker` was not among the fourteen names in
+`SECRET_PATH_MARKERS`; `grep -r api_key . --include=*.json` cleared because it names no
+secret path at all — it searches for them. That marker list was a deny-list living inside
+an allow-list, failing exactly the way this file's own docstring says deny-lists fail.
+
+Adding `.docker` would have fixed one row and not the class, so the check was inverted
+instead. It no longer asks whether a path looks dangerous; it asks whether the path is
+plainly ordinary — relative, inside the tree, not a dotfile — and refuses everything
+else without needing to know what it holds. The home directory, absolute paths, `..` and
+dotfiles of any name all fall out, including the ones nobody has heard of yet. The second
+failure needed its own rule for the same reason: a recursive search reads every file
+under its root and prints what matches, so it can surface a credential whatever the
+pattern is. Deciding that from the pattern would be another deny-list; deciding it from
+the traversal is sound, and `rg` left the allow-list entirely because it recurses by
+default and no flag's absence makes it safe.
+
+**Cost of the inversion across all 485 labelled commands: three clearances** — two
+recursive greps and one `rg`. The allow-list now has no false allows on any of the four
+sets.
 
 Three more things fell out of the dev-set work, none of them guesses I would have made
 before running it.
@@ -567,14 +579,9 @@ appear in the dev set and 21 shared a structural skeleton with one at the time i
 metacharacters and flags present), so most of what it asks is genuinely new. Every
 further look at it costs some of that.
 
-The two allow-list false allows and the model's one are known and **unfixed**. Patching
-`SECRET_PATH_MARKERS` to include `.docker` would clear two test-set commands without
-touching the reason they cleared, and `grep -r api_key` has no path to add. The real
-choice is whether the allow-list should claim to answer "would this reveal a credential"
-at all, given that answering it needs to know what a file contains and what a search is
-for — and it cannot simply decline, because the gate takes the worst of the four answers,
-so declining one question means clearing nothing. That is a coverage-for-soundness trade
-worth making deliberately rather than as a reflex to two failing rows.
+The allow-list's two false allows are fixed, structurally, and cost three clearances
+across 485 commands. The model's one — `git rebase --abort` on test 2 — is not, and will
+not be by adjusting a wording: it sits on the most arguable label in that file.
 
 The `llm` backend reads its probability out of the top logprobs of a one-token answer.
 That is the point of the single token: asked for `{"confidence": 0.9}` a model writes

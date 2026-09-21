@@ -426,11 +426,40 @@ check("AllowlistJudge 拦住拼接、危险 flag 和凭据路径", () => {
     "sed -i 's/a/b/g' src/agent.ts",
     "cat ~/.ssh/id_rsa",
     "git push --force origin main",
+    // 这两条是留出集上真实放过去的，修的是"白名单里套了个黑名单"这个结构问题：
+    // 不再问"路径像不像机密"（那是黑名单，漏了 .docker），改问"路径是不是
+    // 项目里的普通文件"；递归搜索无论 pattern 是什么都能读到任何文件，所以
+    // 按遍历行为拒绝，而不是按 pattern 猜。
+    "cat ~/.docker/config.json",
+    "grep -r api_key . --include=*.json",
+    // 同一个结构问题的其它形态，都没被单独列进任何名单
+    "cat ~/.config/gh/hosts.yml",
+    "head -5 ../sibling-project/.env",
+    "cat .npmrc",
+    "grep -rn TOKEN .",
   ];
   for (const command of mustReject) {
     if (judge.inspect(command).safe) throw new Error(`不该放行: ${command}`);
   }
   console.log(chalk.gray(`    ${mustReject.length} 条危险命令全部拦住`));
+});
+
+check("AllowlistJudge 仍然放行项目内的普通读取", () => {
+  const judge = new AllowlistJudge();
+  const mustClear = [
+    "cat package.json",
+    "head -50 README.md",
+    "wc -l src/*.ts",
+    "du -sh .",
+    "find . -name *.ts",
+    "git log --oneline -20",
+    'grep -n "TODO" src/index.ts',
+  ];
+  for (const command of mustClear) {
+    const verdict = judge.inspect(command);
+    if (!verdict.safe) throw new Error(`不该拦: ${command} —— ${verdict.reason}`);
+  }
+  console.log(chalk.gray(`    ${mustClear.length} 条项目内读取仍然放行`));
 });
 
 await checkAsync("AllowlistJudge 对不认识的问题不瞎答", async () => {
