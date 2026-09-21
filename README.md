@@ -139,11 +139,27 @@ else would catch their types.
 Seven runnable examples live in `examples/`, from a single call to subagents and custom
 tools.
 
+### Any Anthropic-compatible endpoint
+
+Nothing here is pinned to api.anthropic.com. The SDK honours `ANTHROPIC_BASE_URL`, so
+a compatible provider works with no code change:
+
+```bash
+ANTHROPIC_BASE_URL=https://your-provider/anthropic \
+ANTHROPIC_API_KEY=… \
+npm run cli -- --model their-model-id
+```
+
 ### Status
 
 The tool layer, permission rules, session round-trips and cost maths are covered by the
-mock suite and run on every change. The live API path — streaming, the agentic loop
-against real responses — needs a key and is exercised by hand, not in CI.
+mock suite and run on every change.
+
+The live path — streaming, the agentic loop, tool calls, and the permission round-trip
+under piped input — has been exercised end to end against an Anthropic-compatible
+endpoint (MiniMax M2), but it is not in CI: it costs money and needs a key. Cost
+figures come from the table in `src/utils/cost.ts`, which prices Anthropic models, so
+they are meaningless against a third-party endpoint.
 
 ## Provenance
 

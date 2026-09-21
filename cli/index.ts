@@ -239,22 +239,36 @@ ${chalk.bold("Slash commands (REPL)")}
  * Called exactly once per Agent instance — see note 2 in the file header.
  */
 function attachRenderer(agent: Agent): void {
-  let wroteText = false;
+  // Thinking and answer text arrive as separate streams that can alternate
+  // several times in one turn. Without a break on every transition they run
+  // together into one paragraph — visible with any provider that narrates its
+  // plan before calling a tool.
+  let stream: "text" | "thinking" | null = null;
+
+  const startStream = (kind: "text" | "thinking") => {
+    if (stream !== null && stream !== kind) stdout.write("\n");
+    stream = kind;
+  };
+
+  const endStream = () => {
+    if (stream !== null) {
+      stdout.write("\n");
+      stream = null;
+    }
+  };
 
   agent.on((event) => {
     switch (event.type) {
       case "text_delta":
+        startStream("text");
         stdout.write(event.delta);
-        wroteText = true;
         break;
       case "thinking_delta":
+        startStream("thinking");
         stdout.write(chalk.magenta(event.delta));
         break;
       case "tool_start":
-        if (wroteText) {
-          stdout.write("\n");
-          wroteText = false;
-        }
+        endStream();
         console.log(
           chalk.cyan(`⚙  ${event.toolName}`) +
             chalk.gray(` — ${JSON.stringify(event.input).slice(0, 100)}`),
