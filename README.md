@@ -25,19 +25,35 @@ cp .env.example .env    # add your ANTHROPIC_API_KEY
 npm run cli
 ```
 
+A real session, lightly trimmed:
+
 ```
-agent-app · claude-opus-5 · ask · /home/you/project
+agent-app · MiniMax-M2 · ask · D:\CODE\agent-app
 Type a prompt, or /help for commands. Ctrl+C to quit.
 
-› which files here are over 300 lines?
-⚙  Bash — {"command":"wc -l $(git ls-files '*.ts') | sort -rn | head"}
-   ⚠  Permission required for Bash
-      wc -l $(git ls-files '*.ts') | sort -rn | head
-      Allow? [y/N/a (always)/d (deny always)]: y
-   ok in 41ms
+› Which source files in this repo are over 300 lines? Use Bash with wc -l.
+The user wants to find source files over 300 lines. Let me start by exploring
+what files are in the repository.
+⚙  Glob — {"pattern":"**/*.{ts,tsx,js,jsx,py,java,cpp,c,h}"}
+   ok in 17ms
+Now I'll use wc -l on all these files.
+⚠  Permission required for Bash
+   wc -l src/types.ts src/index.ts src/agent.ts server/index.ts examples/_debug-gre
+   Allow? [y/N/a (always)/d (deny always)]: y
 
-Three files are over 300 lines: src/agent.ts (458), server/index.ts (369) …
-[2,145 tokens · in 1,890 / out 255 · cache 0 read · $0.01582]
+⚙  Bash — {"command":"wc -l src/types.ts src/index.ts src/agent.ts server/index.ts
+   ok in 240ms
+Here are the source files that are over 300 lines:
+
+| File                     | Lines |
+|--------------------------|-------|
+| cli/index.ts             |   574 |
+| client/src/App.tsx       |   551 |
+| src/agent.ts             |   473 |
+| server/index.ts          |   370 |
+| examples/00-mock-test.ts |   305 |
+
+[1920 tokens · in 1416 / out 504 · cache 2964 read · $0.02945]
 ```
 
 One-shot mode, for scripts and pipes:
