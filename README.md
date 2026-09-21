@@ -704,8 +704,35 @@ and says so.
 | 0.5 | 26/40 | 6/20 | 0/20 |
 | 0.7 | 32/40 | 12/20 | 0/20 |
 
-At 0.20 that is **30% off the bill** against all-Opus on a fixed token profile, with one
-request in twenty sent to a model I think was too small for it.
+At 0.20 that is 30% off the bill against all-Opus on a fixed token profile, with one
+request in twenty sent to a model I think was too small for it — on the dev set.
+
+`eval/routing/testset.ts` is 65 requests generated afterwards, from situations rather
+than difficulty levels so the framing could not leak the label, and labelled by hand:
+
+|  | dev (40) | held out (65) |
+|---|---|---|
+| downgraded | 15/40 (38%) | 22/65 (34%) |
+| wrong downgrades | 1/20 (5%) | **7/37 (19%)** |
+| wrong escalations | 6/20 | 13/28 |
+| cost saved | 30% | 27% |
+
+**Nearly four times the error rate out of sample**, in the same direction the gate's dev
+numbers were wrong in. One hard request in five gets the small model, including "can you
+refactor this code to improve performance and maintainability?" at 0.047.
+
+Across all 105 labelled requests the router's answers correlate with my labels at
+r = 0.555 and with raw prompt length at 0.372; length itself predicts the labels at
+0.332, leaving about 0.24 of residual length sensitivity. So it does read brevity as
+simplicity a little — but the real problem is that 0.555 is weak agreement, and 19%
+follows from it.
+
+**Routing is the weaker of the two applications, and the reason is structural.** A shell
+command carries its hazard on its face: `rm -rf /` means the same thing in every
+repository, which is why the gate reaches zero false allows on 326 held-out commands. The
+difficulty of "optimize the database query performance" depends entirely on a codebase
+the judge is never shown. Same interface, same discipline, and a question a one-line
+state cannot answer — which is a limit of what was asked, not of the idea.
 
 The default started at 0.5, reasoned from harm asymmetry: a wrong downgrade produces a
 worse answer the user reads and can retry, unlike a false allow, so it looked like it
