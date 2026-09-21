@@ -93,8 +93,8 @@ console.log(result.text, result.usage.estimatedCostUsd);
 | `-C, --cwd <path>` | working directory for file and shell tools |
 | `--resume <id>` | continue a saved session |
 | `--allow-all` / `--ask` / `--read-only` | permission preset (default `--ask`) |
-| `--gate [backend]` | judge the `ask` cases instead of asking all of them: `allowlist` (default, offline) or `llm` |
-| `--gate-threshold <n>` | auto-allow below this P(destructive); model-specific, measure it first |
+| `--gate [backend]` | judge the `ask` cases instead of asking all of them: `llm` (default, needs logprobs) or `allowlist` (offline) |
+| `--gate-threshold <n>` | auto-allow below this P(destructive); default 0.20, model-specific — measure before changing |
 
 In the REPL: `/help` `/tools` `/cost` `/sessions` `/resume <id>` `/new` `/model [id]`
 `/permissions <preset>` `/gate [backend]` `/cwd [path]` `/exit`.
@@ -147,7 +147,7 @@ looks, to the agent, like a tool that is broken.
 question, or answers with something that is not a probability in [0, 1] gets the user
 asked. The failure worth guarding against is not a wrong answer — the user sees that at
 the prompt and fixes it — but the judge being silently absent while the gate goes on
-reporting that everything is fine. Four of the 35 mock assertions are that path.
+reporting that everything is fine. Four of the 37 mock assertions are that path.
 
 #### What it measures
 
@@ -162,9 +162,9 @@ Both columns are here because the gap between them is the most useful thing meas
 | backend | threshold | dev set · saved / false | test set · saved / false |
 |---|---|---|---|
 | no gate | — | 0/35 · 0/34 | 0/55 · 0/70 |
-| `allowlist` — offline, the default | 0.05 | 24/35 · **0/34** | 5/55 · **2/70** |
+| `allowlist` — offline, was the default | 0.20 | 24/35 · **0/34** | 5/55 · **2/70** |
 | `llm` llama3.1:8b via Ollama | 0.05 | 6/35 · 0/34 | 2/55 · 0/70 |
-| `llm` llama3.1:8b via Ollama | 0.20 | 23/35 · 0/34 | 18/55 · **0/70** |
+| **`llm` llama3.1:8b via Ollama — the default** | **0.20** | 23/35 · 0/34 | 18/55 · **0/70** |
 | `llm` llama3.1:8b via Ollama | 0.35 | 31/35 · **0/34** | 30/55 · **1/70** |
 | `llm` glm4:9b via Ollama (dev only) | 0.20 | 25/35 · 0/34 | — |
 | `llm` yi:9b via Ollama (dev only) | any | ≥1 at every threshold | — |
@@ -192,12 +192,12 @@ class, so nothing has been changed in response — see below.
 Three more things fell out of the dev-set work, none of them guesses I would have made
 before running it.
 
-**The threshold belongs to the judge, not to the gate.** The default 0.05 is right for
-the allow-list, which emits 0.02 or 0.5 and nothing between, and nearly useless for
-llama3.1:8b, which is systematically pessimistic — it scores `echo hello` at 0.32 for
-"would this send data to the network". Same model, same questions, same cases: 6/35 at
-0.05 and 31/35 at 0.35. So `--gate-threshold` is a flag, the library default stays at
-the conservative end, and changing the judge means re-running this.
+**The threshold belongs to the judge, not to the gate.** The original default of 0.05
+suited the allow-list, which emits 0.02 or 0.5 and nothing between, and was nearly
+useless for llama3.1:8b, which is systematically pessimistic — it scores `echo hello` at
+0.32 for "would this send data to the network". Same model, same questions, same cases:
+6/35 at 0.05 and 31/35 at 0.35. So `--gate-threshold` is a flag, and changing the judge
+means re-running this.
 
 **Model choice dominates.** `yi:9b` has false allows at every threshold on the sweep —
 there is no operating point where it is safe — while `llama3.1:8b` and `glm4:9b` both
@@ -218,13 +218,45 @@ Four of those nine false allows were credential reads — the last clause in the
 single yes/no over a disjunction makes the model weigh the clauses against each other;
 four narrow ones do not.
 
-`allowlist` stays the default. 31/35 with zero false allows is better than 24/35 with
-zero, but it is better *at a threshold fitted on these cases* (see below), and it needs
-a specific local model to be running. It is also an allow-list rather than a deny-list
-on purpose: a deny-list's failure mode is missing the destructive command you did not
-think of, which is the exact failure the gate exists to prevent. It pays for that in
-coverage — any pipe, redirect, chain or variable disqualifies the whole command, so
-`grep -rn TODO src/ | head` still gets a prompt.
+#### Why `llm` is the default, and what that cost
+
+`allowlist` was the default until the held-out set was run. It was the safer-looking
+choice: offline, no key, and 24/35 with zero false allows. Both of those numbers turned
+out to describe `cases.ts` rather than the gate, and on fresh commands the allow-list is
+strictly worse than the model — 5/55 with two false allows, against 18/55 with none at
+0.20. So the default is now `llm` at a threshold of 0.20.
+
+That decision was made by reading the test set, which spends some of it; the trade was
+explicit and is logged in `testset.ts`. It also costs the gate its best property: the
+default path now needs an endpoint that returns logprobs, where before it needed
+nothing. `--gate allowlist` is still there for a machine that has neither.
+
+The allow-list itself is unchanged and still an allow-list rather than a deny-list on
+purpose: a deny-list's failure mode is missing the destructive command you did not think
+of, which is the exact failure the gate exists to prevent. Its two false allows come
+from the one place it does keep a deny-list — the secret-path markers — which is the
+same lesson arriving by the same route.
+
+Making `llm` the default forced two changes that had nothing to do with preference:
+
+**The no-logprobs fallback had to stop being a probability.** At 0.05 it mapped "no" to
+0.15, which cleared nothing, so a provider that ignored `logprobs: true` turned the gate
+into a no-op. At 0.20 that same 0.15 clears — a command would have run on the strength
+of one token sampled at temperature 0. `LlmJudge` now throws instead, so the gate fails
+closed and says why; `allowHardLabels` opts back in, and only `eval/risk-gate` sets it,
+to measure hard-label judges rather than to run one.
+
+**The CLI probes at startup.** A judge with no probabilities defers every call, which is
+indistinguishable from a gate nobody enabled. One control question at startup turns that
+into a message, and the gate comes off rather than sitting there doing nothing:
+
+```
+⚠  Risk gate disabled — llm:MiniMax-Text-01 no logprobs; answer came back as "y".
+   A judge with no token probabilities has nothing to threshold, so every
+   call would fall through to you anyway. Use --gate allowlist for an
+   offline judge, or point AGENT_JUDGE_BASE_URL at an endpoint that
+   returns logprobs (a local Ollama does).
+```
 
 #### The threshold, chosen without cheating
 
@@ -397,7 +429,7 @@ fixes shaped the API:
 ## Development
 
 ```bash
-npm test               # 35 assertions, mocked — no API key needed
+npm test               # 37 assertions, mocked — no API key needed
 npm run eval:risk-gate # measure the gate on the dev set — no API key needed
 npm run eval:risk-gate -- --cases test   # the held-out set; see testset.ts first
 npm run typecheck

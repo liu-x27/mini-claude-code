@@ -141,10 +141,10 @@ interface CliOptions {
    * Auto-allow threshold for the gate. Undefined means the library default.
    *
    * Exposed as a flag because the right value turned out to be a property of
-   * the judge, not of the gate: measured on `eval/risk-gate`, the default
-   * 0.05 clears 24/35 safe commands with the allow-list and only 6/35 with
-   * llama3.1:8b, which is systematically pessimistic. Whoever changes the
-   * judge has to re-measure this.
+   * the judge, not of the gate. The default is 0.2, the highest value with
+   * zero false allows for llama3.1:8b on both labelled sets; the same model
+   * at 0.35 looked better on the dev set and then waved one command through
+   * on the held-out one. Whoever changes the judge has to re-measure this.
    */
   gateThreshold: number | undefined;
   prompt: string | undefined;
@@ -204,14 +204,19 @@ function parseArgs(argv: string[]): CliOptions {
         opts.preset = "read-only";
         break;
       case "--gate": {
-        // Optional value: bare --gate takes the offline backend, which is
-        // the one that needs no key and no network.
+        // Optional value: bare --gate takes the judge backend. It used to
+        // take the offline allow-list, on the strength of that list clearing
+        // 24 of 35 safe commands with no false allows — but both halves of
+        // that were properties of the set it was measured on. On commands
+        // written afterwards it clears 5 of 55 and waves through 2 of 70,
+        // where the model clears 18 of 55 with none. `--gate allowlist` is
+        // still there for a machine with no judge endpoint.
         const value = argv[i + 1];
         if (isGateBackend(value)) {
           opts.gate = value;
           i++;
         } else {
-          opts.gate = "allowlist";
+          opts.gate = "llm";
         }
         break;
       }
@@ -246,15 +251,30 @@ function parseArgs(argv: string[]): CliOptions {
  * already discovered its endpoint will not return logprobs does not
  * rediscover it — and re-warn about it — on every prompt.
  */
-function resolveGate(backend: GateBackend, autoAllowBelow?: number): RiskGate | undefined {
+/**
+ * Build the gate, and hand back the judge itself so the caller can probe it.
+ *
+ * The judge escapes the closure on purpose: `createRiskGate` only exposes a
+ * verdict function, and knowing whether the endpoint will return logprobs is
+ * a question about the backend, asked once at startup rather than per call.
+ */
+function resolveGate(
+  backend: GateBackend,
+  autoAllowBelow?: number,
+): { gate: RiskGate | undefined; judge: LlmJudge | undefined } {
   const tuning = autoAllowBelow === undefined ? {} : { autoAllowBelow };
   switch (backend) {
     case "off":
-      return undefined;
+      return { gate: undefined, judge: undefined };
     case "allowlist":
-      return createRiskGate({ backend: new AllowlistJudge(), ...tuning });
-    case "llm":
-      return createRiskGate({ backend: new LlmJudge(), ...tuning });
+      return {
+        gate: createRiskGate({ backend: new AllowlistJudge(), ...tuning }),
+        judge: undefined,
+      };
+    case "llm": {
+      const judge = new LlmJudge();
+      return { gate: createRiskGate({ backend: judge, ...tuning }), judge };
+    }
   }
 }
 
@@ -407,6 +427,8 @@ class ReplState {
   prompt: PermissionPrompt | undefined;
   /** Undefined when the gate is off; rebuilt only when the backend changes. */
   private gate: RiskGate | undefined;
+  /** The judge behind the gate, kept only so verifyGate() can probe it. */
+  private judge: LlmJudge | undefined;
 
   turns = 0;
   totalInputTokens = 0;
@@ -422,19 +444,53 @@ class ReplState {
     this.maxTurns = opts.maxTurns;
     this.sessionId = opts.resume;
     this.prompt = undefined;
-    this.gate = resolveGate(opts.gate, opts.gateThreshold);
+    const resolved = resolveGate(opts.gate, opts.gateThreshold);
+    this.gate = resolved.gate;
+    this.judge = resolved.judge;
   }
 
   /** Swap the judge, reporting failure rather than silently running without one. */
   setGateBackend(backend: GateBackend): boolean {
     try {
-      this.gate = resolveGate(backend, this.gateThreshold);
+      const resolved = resolveGate(backend, this.gateThreshold);
+      this.gate = resolved.gate;
+      this.judge = resolved.judge;
       this.gateBackend = backend;
       return true;
     } catch (err) {
       console.log(chalk.red(err instanceof Error ? err.message : String(err)));
       return false;
     }
+  }
+
+  /**
+   * Check the judge can do the job before the session starts relying on it.
+   *
+   * Worth a round trip now that `llm` is the default. Without it, an endpoint
+   * that ignores `logprobs` produces a gate that defers every single call —
+   * which looks exactly like a gate nobody turned on, and the only hint is a
+   * warning line per tool call. Failing here is not fatal: the gate comes off
+   * and every call goes to the user, which is the behaviour `--ask` had all
+   * along.
+   */
+  async verifyGate(): Promise<void> {
+    if (this.gateBackend !== "llm" || !this.judge) return;
+
+    const capability = await this.judge.probe();
+    if (capability.logprobs) return;
+
+    console.log(chalk.yellow(`⚠  Risk gate disabled — ${this.judge.name} ${capability.detail}.`));
+    console.log(
+      chalk.gray(
+        "   A judge with no token probabilities has nothing to threshold, so every\n" +
+          "   call would fall through to you anyway. Use --gate allowlist for an\n" +
+          "   offline judge, or point AGENT_JUDGE_BASE_URL at an endpoint that\n" +
+          "   returns logprobs (a local Ollama does).",
+      ),
+    );
+    this.gate = undefined;
+    this.judge = undefined;
+    this.gateBackend = "off";
   }
 
   /**
@@ -668,6 +724,7 @@ async function main(): Promise<void> {
   requireApiKey();
 
   const state = new ReplState(opts);
+  await state.verifyGate();
 
   if (opts.prompt !== undefined) {
     await runOnce(state, opts.prompt);

@@ -372,6 +372,40 @@ for (const [label, backend] of failingBackends) {
   });
 }
 
+await checkAsync("默认阈值是 0.2", async () => {
+  // 0.2 是 llama3.1:8b 在两个标注集上都零漏放的最高值。这条测试不是为了
+  // 锁死这个数字，而是为了让"换判断器却没重测阈值"变成一次测试失败。
+  const asker = recordingPrompt();
+  const perm = new PermissionSystem({
+    defaultMode: "ask",
+    prompt: asker.prompt,
+    gate: createRiskGate({ backend: fakeJudge(0.19) }),
+  });
+  const allowed = await perm.check({
+    toolName: "Bash",
+    input: { command: "ls" },
+    description: "ls",
+  });
+  if (!allowed) throw new Error("0.19 应该低于默认阈值 0.2");
+  if (asker.asked !== 0) throw new Error("不该问用户");
+});
+
+await checkAsync("0.2 以上不放行（默认阈值边界）", async () => {
+  const asker = recordingPrompt();
+  const perm = new PermissionSystem({
+    defaultMode: "ask",
+    prompt: asker.prompt,
+    gate: createRiskGate({ backend: fakeJudge(0.21) }),
+  });
+  const allowed = await perm.check({
+    toolName: "Bash",
+    input: { command: "ls" },
+    description: "ls",
+  });
+  if (allowed) throw new Error("0.21 不该被放行");
+  if (asker.asked !== 1) throw new Error("应该落回用户");
+});
+
 await checkAsync("AllowlistJudge 放行只读命令", async () => {
   const judge = new AllowlistJudge();
   const answers = await judge.noul({ tool: "Bash", command: "git log --oneline -5" }, [
