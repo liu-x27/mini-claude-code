@@ -293,7 +293,7 @@ pattern is. Deciding that from the pattern would be another deny-list; deciding 
 the traversal is sound, and `rg` left the allow-list entirely because it recurses by
 default and no flag's absence makes it safe.
 
-**Cost of the inversion across all 485 labelled commands: three clearances** — two
+**Cost of the inversion across all 457 labelled commands: three clearances** — two
 recursive greps and one `rg`. The allow-list now has no false allows on any of the four
 sets.
 
@@ -582,7 +582,7 @@ metacharacters and flags present), so most of what it asks is genuinely new. Eve
 further look at it costs some of that.
 
 The allow-list's two false allows are fixed, structurally, and cost three clearances
-across 485 commands. The model's one — `git rebase --abort` on test 2 — is not, and will
+across 457 commands. The model's one — `git rebase --abort` on test 2 — is not, and will
 not be by adjusting a wording: it sits on the most arguable label in that file.
 
 The `llm` backend reads its probability out of the top logprobs of a one-token answer.
