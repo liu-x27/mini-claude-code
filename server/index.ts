@@ -1,5 +1,4 @@
-import express from "express";
-import cors from "cors";
+import express, { type NextFunction, type Request, type Response } from "express";
 import { randomUUID } from "node:crypto";
 import Anthropic from "@anthropic-ai/sdk";
 import OpenAI from "openai";
@@ -65,8 +64,39 @@ const pendingApprovals = new Map<string, (decision: PermissionDecision) => void>
 /** Long enough for a human to read a command, short enough to not leak. */
 const APPROVAL_TIMEOUT_MS = 120_000;
 
+/**
+ * Only this machine may drive the agent.
+ *
+ * The API runs tools on the host and has no login, so who can reach it is
+ * the whole of its access control. Three things keep that to this machine:
+ * the socket is bound to loopback, so nothing on the network can connect; a
+ * Host header that is not a loopback name is refused, which is what a
+ * DNS-rebinding page would send; and an Origin from anywhere but a loopback
+ * page is refused, which is what any other website's fetch would send. There
+ * are no CORS headers at all — the client reaches the API through the Vite
+ * proxy, same-origin, and never needed them.
+ */
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
+
+function isLoopback(url: string): boolean {
+  try {
+    return LOOPBACK_HOSTS.has(new URL(url).hostname);
+  } catch {
+    return false;
+  }
+}
+
+function localOnly(req: Request, res: Response, next: NextFunction): void {
+  const { host, origin } = req.headers;
+  if (!host || !isLoopback(`http://${host}`) || (origin !== undefined && !isLoopback(origin))) {
+    res.status(403).json({ ok: false, reason: "this API only answers pages served from this machine" });
+    return;
+  }
+  next();
+}
+
 const app = express();
-app.use(cors());
+app.use(localOnly);
 app.use(express.json());
 
 const sessions = new SessionManager();
@@ -502,8 +532,8 @@ app.post("/api/chat", async (req, res) => {
 });
 
 const PORT = Number(process.env["PORT"] ?? 3001);
-app.listen(PORT, () => {
-  console.log(`\n🚀 Agent API server running at http://localhost:${PORT}`);
+app.listen(PORT, "127.0.0.1", () => {
+  console.log(`\n🚀 Agent API server running at http://127.0.0.1:${PORT} (this machine only)`);
   console.log(`   API Key: ${process.env["ANTHROPIC_API_KEY"] ? "✓ set" : "✗ not set (enter in UI)"}`);
   console.log(`   Tools: ${globalRegistry.names().join(", ")}`);
   console.log(`   Risk gate: ${gate ? gateLabel : "off"} — asks before Bash / Write / Edit\n`);

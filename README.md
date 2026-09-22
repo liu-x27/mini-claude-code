@@ -80,6 +80,10 @@ The gate runs there too, and the browser is where its behaviour is easiest to
 see: a cleared call carries the probability it cleared on, and a deferred one
 becomes a card with the judge's own reasoning on it.
 
+The server runs tools on this machine and has no login, so it only answers this machine:
+it listens on `127.0.0.1`, and refuses any request whose `Host` or `Origin` is not a
+loopback address — another website's page, or one reached by DNS rebinding.
+
 ![A safe command cleared without a prompt](docs/gate-auto-approved.png)
 
 `wc -l src/agent.ts` scored 0.074 and ran — the green pill is the only trace, because
