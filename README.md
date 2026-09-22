@@ -402,3 +402,10 @@ under `eval/`, and the approval path in the web UI that the injectable prompt ha
 waiting for since the CLI landed. Its working record — every threshold reasoned wrong
 before being measured right, every wording refused — is in
 [docs/measurements.md](docs/measurements.md). This file is the summary.
+
+Why every failure path here resolves to asking rather than to a default has a source
+outside this repo: [llm-distill-study](https://github.com/liu-x27/llm-distill-study) is
+a post-mortem of seven silent failures in a research pipeline, and building the `llm`
+backend ran into two of them again — a label word missing from the top-K, a reasoning
+model spending its token budget before answering. `LlmJudge.probe()` exists because of
+the rule that came out of that.
