@@ -24,7 +24,10 @@ import { estimateCost, formatCost } from "../src/utils/cost.js";
 import type { ToolContext } from "../src/types.js";
 import * as os from "node:os";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import chalk from "chalk";
+
+const REPO_ROOT = fileURLToPath(new URL("..", import.meta.url));
 
 // ─────────────────────────────────────────────
 const pass = (msg: string) => console.log(chalk.green("  ✓") + " " + msg);
@@ -190,7 +193,7 @@ await checkAsync("FileEditTool: 字符串不存在时报错", async () => {
 
 await checkAsync("GlobTool: 匹配 TS 文件", async () => {
   const tool = new GlobTool();
-  const result = await tool.execute({ pattern: "src/**/*.ts" }, { ...ctx, cwd: "D:/CODE/agent-app" });
+  const result = await tool.execute({ pattern: "src/**/*.ts" }, { ...ctx, cwd: REPO_ROOT });
   if (result.type !== "success") throw new Error(result.message);
   if (!result.output.includes(".ts")) throw new Error("应该找到 TS 文件");
   console.log(chalk.gray("    " + result.output.split("\n")[0]));
@@ -199,8 +202,8 @@ await checkAsync("GlobTool: 匹配 TS 文件", async () => {
 await checkAsync("GrepTool: 搜索关键词", async () => {
   const tool = new GrepTool();
   const result = await tool.execute(
-    { pattern: "class Agent", path: "D:/CODE/agent-app/src" },
-    { ...ctx, cwd: "D:/CODE/agent-app" }
+    { pattern: "class Agent", path: path.join(REPO_ROOT, "src") },
+    { ...ctx, cwd: REPO_ROOT }
   );
   if (result.type !== "success") throw new Error(result.message);
   // 输出包含匹配行内容（Windows 路径用 \ 分隔，用内容匹配而非文件名）
