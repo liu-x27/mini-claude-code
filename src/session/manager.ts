@@ -6,6 +6,7 @@ import type { ConversationMessage, Session, SessionMetadata } from "../types.js"
 import { logger } from "../utils/logger.js";
 
 const DEFAULT_SESSION_DIR = path.join(os.homedir(), ".agent-app", "sessions");
+const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
  * Manages session persistence — saves and loads conversation history to disk.
@@ -41,9 +42,8 @@ export class SessionManager {
 
   /** Load an existing session by ID */
   async load(sessionId: string): Promise<Session | null> {
-    const filePath = this.filePath(sessionId);
     try {
-      const raw = await fs.readFile(filePath, "utf-8");
+      const raw = await fs.readFile(this.filePath(sessionId), "utf-8");
       return JSON.parse(raw) as Session;
     } catch {
       return null;
@@ -119,7 +119,14 @@ export class SessionManager {
     }
   }
 
+  /**
+   * Session ids arrive from the CLI and from HTTP bodies and URLs, and go
+   * straight into a path. Anything but the UUID `create` hands out is
+   * refused here, so `../../x` can never name a file outside the session dir.
+   * `load` reads the throw as "no such session", `delete` as already gone.
+   */
   private filePath(sessionId: string): string {
+    if (!SESSION_ID.test(sessionId)) throw new Error(`not a session id: ${sessionId}`);
     return path.join(this.sessionDir, `${sessionId}.json`);
   }
 }

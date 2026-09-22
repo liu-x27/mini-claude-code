@@ -23,6 +23,7 @@ import { SessionManager } from "../src/session/manager.js";
 import { estimateCost, formatCost } from "../src/utils/cost.js";
 import type { ToolContext } from "../src/types.js";
 import * as os from "node:os";
+import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import chalk from "chalk";
@@ -551,6 +552,22 @@ await checkAsync("appendMessages 追加消息", async () => {
   let session = await sm.create({ model: "claude-opus-5", cwd: "/tmp", turns: 0, totalInputTokens: 0, totalOutputTokens: 0, totalCost: 0 });
   session = sm.appendMessages(session, [{ role: "user", content: "hello" }]);
   if (session.messages.length !== 1) throw new Error(`期望 1 条消息，得到 ${session.messages.length}`);
+});
+
+await checkAsync("会话 id 不能跳出会话目录", async () => {
+  // 在会话目录旁边放一个合法的会话文件，再用 ../ 去够它
+  const sm = new SessionManager(tempSessionDir);
+  const session = await sm.create({ model: "claude-opus-5", cwd: "/tmp", turns: 0, totalInputTokens: 0, totalOutputTokens: 0, totalCost: 0 });
+  const outside = tempSessionDir + "_outside.json";
+  await fs.writeFile(outside, JSON.stringify(session), "utf-8");
+  const escape = `../${path.basename(tempSessionDir)}_outside`;
+
+  if ((await sm.load(escape)) !== null) throw new Error("load 读到了会话目录外的文件");
+  await sm.delete(escape);
+  await fs.access(outside).catch(() => {
+    throw new Error("delete 删掉了会话目录外的文件");
+  });
+  await fs.unlink(outside);
 });
 
 await checkAsync("列出所有会话", async () => {
