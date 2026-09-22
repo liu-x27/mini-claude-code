@@ -1,4 +1,4 @@
-# agent-app
+# mini-claude-code
 
 A small, readable agent framework built on the Claude API — the agentic loop, a tool
 registry, a permission system, and session persistence, with three ways to drive it:
@@ -38,9 +38,12 @@ AGENT_JUDGE_API_KEY=ollama AGENT_JUDGE_BASE_URL=http://localhost:11434/v1 AGENT_
 
 Without it, `--gate allowlist` is offline and needs nothing — it just clears
 less. `npm run eval:risk-gate` runs on the allow-list and needs no setup at
-all, so the numbers below are reproducible from a clean clone.
+all, so its rows are reproducible from a clean clone; the `llm` rows need a
+judge standing up first.
 
-A real session, lightly trimmed:
+A real session, lightly trimmed. It was recorded before the decision layer
+landed, so the line counts it reports are the ones those files had then —
+`src/agent.ts` is 506 lines now:
 
 ```
 agent-app · MiniMax-M2 · ask · D:\CODE\agent-app
@@ -176,17 +179,23 @@ noul(state, questions): Promise<{ id: string; probability: number }[]>
 
 Two constraints shape everything else.
 
-**The gate can only narrow.** It is consulted after the static rules, and only for calls
-that already resolved to `ask`, so its one power is turning some of those into `allow`.
+**The gate can only narrow.** What it narrows is the set of calls you get asked about,
+not the set that is permitted: it is consulted after the static rules, only for calls
+that already resolved to `ask`, and its one power is turning some of those into `allow`.
+It cannot touch a static `deny`.
 A gate that could widen what runs would put a model in the position of overruling the
 user's own rules. Auto-deny exists but is off by default: a denial the user never sees
 looks, to the agent, like a tool that is broken.
 
-**Every failure path lands on `ask`.** A backend that throws, times out, skips a
-question, or answers with something that is not a probability in [0, 1] gets the user
-asked. The failure worth guarding against is not a wrong answer — the user sees that at
-the prompt and fixes it — but the judge being silently absent while the gate goes on
-reporting that everything is fine. Four of the mock assertions cover that path, and four
+**Every *backend* failure path lands on `ask`.** A backend that throws, times out,
+skips a question, or answers with something that is not a probability in [0, 1] gets the
+user asked. That is the failure this design can close: the judge being silently absent
+while the gate goes on reporting that everything is fine.
+
+The failure it cannot close is a well-formed answer that is simply wrong. A score that
+sits below the threshold on something destructive auto-allows it, and the user never sees
+a prompt to correct — which is why false allows are counted separately below and why a
+single one fails the run. Four of the mock assertions cover that path, and four
 more are its mirror in the router.
 
 #### What it measures
@@ -279,7 +288,10 @@ with a judge measures nothing, so this measures agreement with my own judgement 
 | downgraded | 15/40 (38%) | 22/65 (34%) |
 | wrong downgrades | 1/20 (5%) | **7/37 (19%)** |
 | wrong escalations | 6/20 | 13/28 |
-| cost saved | 30% | 27% |
+| cost saved, estimated | 30% | 27% |
+
+The cost row is an estimate under a fixed token profile, not a measured bill across
+real sessions — it prices the tier each request was routed to, nothing more.
 
 **Nearly four times the error rate out of sample**, the same direction the gate's dev
 numbers were wrong in. One hard request in five gets the small model, including "can you
@@ -359,7 +371,10 @@ probability in [0, 1]. Those eight assertions are the ones worth having, because
 cover the paths that would otherwise fail quietly.
 
 `npm run eval:risk-gate` and `npm run eval:routing` run offline against the allow-list
-backend and need no key, so the tables above are reproducible from a clean clone.
+backend and need no key, so **the `allowlist` rows** are reproducible from a clean clone.
+The `llm` rows are not: they need a judge, and the ones published here were measured
+against a local Ollama serving `llama3.1:8b`. Reproducing them means standing that up
+first.
 
 The live path — streaming, the agentic loop, tool calls, and the permission round-trip
 under piped input — has been exercised end to end against an Anthropic-compatible
@@ -394,7 +409,7 @@ are spent; the third has been read once.
 The core framework (agent loop, tools, permissions, sessions, web UI) was built in March
 2026. The CLI, the injectable permission prompt, the repo-wide typecheck, and the move to
 the current Claude model generation were added in September 2026, when the project was
-cleaned up and published.
+cleaned up for publication.
 
 The decision layer came a few days after that, prompted by the decision-model designs
 going around at the time: `src/judge/`, the risk gate, the model router, the labelled sets
