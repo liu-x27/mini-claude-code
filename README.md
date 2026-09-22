@@ -82,18 +82,18 @@ becomes a card with the judge's own reasoning on it.
 
 ![A safe command cleared without a prompt](docs/gate-auto-approved.png)
 
-`wc -l src/agent.ts` scored 0.066 here and ran — the green pill is the only trace,
-because the gate's entire effect is a prompt that does not appear. (The CLI transcript
-above is a different session and scored 0.074 on the same command; the judge is not
-bit-deterministic across runs on this GPU, which is worth knowing before anyone treats a
-third decimal place as meaningful.)
+`wc -l src/agent.ts` scored 0.074 and ran — the green pill is the only trace, because
+the gate's entire effect is a prompt that does not appear.
 
 ![A destructive command deferred to the user](docs/gate-needs-approval.png)
 
-`rm -rf dist` scored 0.995 and stopped. The card names the command rather than
-the tool, since "Bash" is not a decision anyone can make and `rm -rf dist` is,
-and it shows what deferred it: a call held at 0.21 deserves a different glance
-from one held at 0.995.
+`rm -rf dist` scored 0.998 and stopped. The card names the command rather than the tool,
+since "Bash" is not a decision anyone can make and `rm -rf dist` is, and it shows what
+deferred it: a call held at 0.21 deserves a different glance from one held at 0.998.
+
+The CLI transcript further up scored 0.995 on that same command in a different session.
+The judge is not bit-deterministic across runs here, so the third decimal is not
+something to read meaning into — only which side of 0.20 it lands on.
 
 Both images come from a real run against a real judge — `docs/` is regenerated
 by driving the live UI, not by mocking the props.
