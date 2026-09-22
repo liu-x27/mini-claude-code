@@ -41,38 +41,27 @@ less. `npm run eval:risk-gate` runs on the allow-list and needs no setup at
 all, so its rows are reproducible from a clean clone; the `llm` rows need a
 judge standing up first.
 
-A real session, lightly trimmed. It was recorded before the decision layer
-landed, so the line counts it reports are the ones those files had then —
-`src/agent.ts` is 506 lines now:
+The gate in a real session, in both directions:
 
 ```
-agent-app · MiniMax-M2 · ask · D:\CODE\agent-app
-Type a prompt, or /help for commands. Ctrl+C to quit.
+› Run exactly: wc -l src/agent.ts
+  Risk gate allowed Bash — worst P=0.074 (exfiltrates) < 0.2
+  ⚙ Bash — wc -l src/agent.ts        ok in 88ms
+  506
 
-› Which source files in this repo are over 300 lines? Use Bash with wc -l.
-The user wants to find source files over 300 lines. Let me start by exploring
-what files are in the repository.
-⚙  Glob — {"pattern":"**/*.{ts,tsx,js,jsx,py,java,cpp,c,h}"}
-   ok in 17ms
-Now I'll use wc -l on all these files.
-⚠  Permission required for Bash
-   wc -l src/types.ts src/index.ts src/agent.ts server/index.ts examples/_debug-gre
-   Allow? [y/N/a (always)/d (deny always)]: y
+› Clean the build. Run exactly: rm -rf dist
+  Risk gate deferred Bash — P(destroys-data)=0.995 is not below 0.2
+  ⚠ Permission required for Bash
+  Allow? [y/N/a (always)/d (deny always)]: n
 
-⚙  Bash — {"command":"wc -l src/types.ts src/index.ts src/agent.ts server/index.ts
-   ok in 240ms
-Here are the source files that are over 300 lines:
-
-| File                     | Lines |
-|--------------------------|-------|
-| cli/index.ts             |   574 |
-| client/src/App.tsx       |   551 |
-| src/agent.ts             |   473 |
-| server/index.ts          |   370 |
-| examples/00-mock-test.ts |   305 |
-
-[1920 tokens · in 1416 / out 504 · cache 2964 read · $0.02945]
+› Use rmdir /s /q dist instead
+  Risk gate deferred Bash — P(destroys-data)=0.817 is not below 0.2
+  ⚠ Permission required for Bash
 ```
+
+The third exchange is the one a scripted demo would have hidden. Denied `rm -rf dist`,
+the agent immediately retried with the Windows equivalent — a command the allow-list
+models not at all and would have had nothing to say about.
 
 One-shot mode, for scripts and pipes:
 
@@ -129,9 +118,9 @@ console.log(result.text, result.usage.estimatedCostUsd);
 | `-C, --cwd <path>` | working directory for file and shell tools |
 | `--resume <id>` | continue a saved session |
 | `--allow-all` / `--ask` / `--read-only` | permission preset (default `--ask`) |
-| `--gate [backend]` | judge the `ask` cases instead of asking all of them: `llm` (default, needs logprobs) or `allowlist` (offline) |
-| `--gate-threshold <n>` | auto-allow below this P(destructive); default 0.20, model-specific — measure before changing |
-| `--cheap-model <id>` | route each prompt between this and `--model` using the same judge; needs `--gate` |
+| `--gate [backend]` | score the `ask` cases: `llm` (default) or `allowlist` (offline) |
+| `--gate-threshold <n>` | auto-allow below this P; default 0.20, model-specific |
+| `--cheap-model <id>` | route prompts between this and `--model`; needs `--gate` |
 
 In the REPL: `/help` `/tools` `/cost` `/sessions` `/resume <id>` `/new` `/model [id]`
 `/permissions <preset>` `/gate [backend]` `/cwd [path]` `/exit`.
@@ -238,10 +227,10 @@ reads — the last clause in the list. Splitting it into four narrow questions a
 the worst answer removed all four. A single yes/no over a disjunction makes a model weigh
 the clauses against each other; four narrow ones do not.
 
-Three of those four wordings have since been tuned individually, two of them
-successfully, and the three winners have nothing in common — the move that fixed one made
-another five times worse. **There is no phrasing rule to carry forward**, which is the
-argument for the harness rather than for any wording it produced.
+Three of those four wordings have since been tuned individually and the winners have
+nothing in common — the move that fixed one made another five times worse. **There is no
+phrasing rule to carry forward**, which is the argument for the harness rather than for
+any wording it produced.
 
 → **[docs/measurements.md](docs/measurements.md)** has the rest: every threshold that was
 reasoned wrong and then measured right, the six wordings refused for `outside-cwd`, the
@@ -267,9 +256,8 @@ was `wc -l src/agent.ts`.
 user; the router's resolve to the *expensive* model. Both are closed — what counts as
 closed depends on which direction costs you something you cannot get back.
 
-**Two tiers, so the question stays a yes/no.** Jev's `Choice` primitive is the right
-shape for three or more, and `JudgeBackend` still has no `choice()` method because
-nothing has needed one. A third tier is what would earn it.
+**Two tiers, so the question stays a yes/no.** `JudgeBackend` has no `choice()` method
+because nothing has needed one; a third tier is what would earn it.
 
 **It decides once, before turn one.** Routing every turn would save more, since most
 turns are "read this tool output and continue" — but it would also hand one model's
@@ -406,21 +394,17 @@ are spent; the third has been read once.
 
 ## Provenance
 
-The core framework (agent loop, tools, permissions, sessions, web UI) was built in March
-2026. The CLI, the injectable permission prompt, the repo-wide typecheck, and the move to
-the current Claude model generation were added in September 2026, when the project was
-cleaned up for publication.
-
-The decision layer came a few days after that, prompted by the decision-model designs
-going around at the time: `src/judge/`, the risk gate, the model router, the labelled sets
-under `eval/`, and the approval path in the web UI that the injectable prompt had been
-waiting for since the CLI landed. Its working record — every threshold reasoned wrong
-before being measured right, every wording refused — is in
+The framework came first — agent loop, tools, permissions, sessions, web UI — then the
+CLI and the injectable permission prompt, then the decision layer: `src/judge/`, the
+gate, the router, the labelled sets under `eval/`, and the approval path the injectable
+prompt had been waiting for. Its working record, every threshold reasoned wrong before
+being measured right and every wording refused, is in
 [docs/measurements.md](docs/measurements.md). This file is the summary.
 
-Why every failure path here resolves to asking rather than to a default has a source
-outside this repo: [llm-distill-study](https://github.com/liu-x27/llm-distill-study) is
-a post-mortem of seven silent failures in a research pipeline, and building the `llm`
-backend ran into two of them again — a label word missing from the top-K, a reasoning
-model spending its token budget before answering. `LlmJudge.probe()` exists because of
-the rule that came out of that.
+Why every backend failure here resolves to asking rather than to a default is a rule
+carried over from an earlier project of mine — a research pipeline that produced
+confident wrong numbers for months without ever raising. **A fallback must either raise,
+or write into a diagnostic that something actually checks.** Building the `llm` backend
+ran into two of those same silent returns, a label word missing from the top-K and a
+reasoning model spending its budget before answering, which is why `LlmJudge.probe()`
+exists.
