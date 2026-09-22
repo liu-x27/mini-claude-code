@@ -150,6 +150,29 @@ closing.
 **Sessions** (`src/session/`) are JSON transcripts under `~/.agent-app/sessions`, with
 token and cost totals. Passing `resumeSessionId` replays one into the next run.
 
+### Three things the REPL had to solve
+
+A REPL is a harsher host than a one-shot script, and building it surfaced real problems
+in the framework rather than in the terminal code. They are worth naming because the
+fixes shaped the API:
+
+1. **Who owns stdin.** Permission prompts used to open their own readline interface, so
+   a REPL holding one would have two readers fighting over the same keystrokes. The fix
+   was to make the prompt injectable rather than to work around it at the call site —
+   which also means an HTTP server no longer blocks a request handler on the server
+   process's stdin.
+
+2. **Lines vanishing under a pipe.** `readline.question()` captures exactly one line and
+   silently drops any that arrive while no question is pending. Invisible at a TTY,
+   fatal when the CLI is driven from a pipe. `LineReader` queues every line instead, so
+   interactive and scripted input behave identically.
+
+3. **`run()` twice is two conversations.** `initSession()` only resumes when
+   `resumeSessionId` is set, and the config is never updated after a run — so a naive
+   REPL loop would lose all memory between turns while looking like it worked. The CLI
+   seeds each turn with the previous turn's session id. An `Agent.continueSession()`
+   would be the better fix; that is a core API change, still open.
+
 ### The risk gate
 
 `--ask` asks before every Bash call, which in practice means asking before `wc -l`. The
@@ -295,29 +318,6 @@ one-line state cannot answer: a limit of what was asked, not of the idea.
 → **[docs/measurements.md](docs/measurements.md#what-the-router-measures-and-what-it-cannot)**
 for the threshold history, the correlation against prompt length, and why the default
 moved from 0.5 to 0.2.
-
-### Three things the REPL had to solve
-
-A REPL is a harsher host than a one-shot script, and building it surfaced real problems
-in the framework rather than in the terminal code. They are worth naming because the
-fixes shaped the API:
-
-1. **Who owns stdin.** Permission prompts used to open their own readline interface, so
-   a REPL holding one would have two readers fighting over the same keystrokes. The fix
-   was to make the prompt injectable rather than to work around it at the call site —
-   which also means an HTTP server no longer blocks a request handler on the server
-   process's stdin.
-
-2. **Lines vanishing under a pipe.** `readline.question()` captures exactly one line and
-   silently drops any that arrive while no question is pending. Invisible at a TTY,
-   fatal when the CLI is driven from a pipe. `LineReader` queues every line instead, so
-   interactive and scripted input behave identically.
-
-3. **`run()` twice is two conversations.** `initSession()` only resumes when
-   `resumeSessionId` is set, and the config is never updated after a run — so a naive
-   REPL loop would lose all memory between turns while looking like it worked. The CLI
-   seeds each turn with the previous turn's session id. An `Agent.continueSession()`
-   would be the better fix; that is a core API change, still open.
 
 ## Development
 
