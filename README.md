@@ -59,9 +59,9 @@ The gate in a real session, in both directions:
   ⚠ Permission required for Bash
 ```
 
-The third exchange is the one a scripted demo would have hidden. Denied `rm -rf dist`,
-the agent immediately retried with the Windows equivalent — a command the allow-list
-models not at all and would have had nothing to say about.
+The third exchange is the one worth having. After denying `rm -rf dist` I asked for the
+Windows equivalent by hand, and the judge deferred that too, at 0.817 — a command the
+allow-list models not at all and would have had nothing to say about.
 
 One-shot mode, for scripts and pipes:
 
@@ -101,7 +101,7 @@ by driving the live UI, not by mocking the props.
 Or use it as a library:
 
 ```ts
-import { Agent } from "agent-app";
+import { Agent } from "agent-app";   // the package name in package.json; not published to npm
 
 const agent = new Agent({
   model: "claude-opus-5",
@@ -194,10 +194,10 @@ noul(state, questions): Promise<{ id: string; probability: number }[]>
 
 Two constraints shape everything else.
 
-**The gate can only narrow.** What it narrows is the set of calls you get asked about,
-not the set that is permitted: it is consulted after the static rules, only for calls
-that already resolved to `ask`, and its one power is turning some of those into `allow`.
-It cannot touch a static `deny`.
+**What the gate can and cannot do.** When enabled, it can auto-approve calls the static
+rules classified as `ask`. It cannot touch a static `deny`, and is never consulted for
+one. So it moves calls out of your prompt queue, not out of your deny list — and a model
+is never in a position to overrule a rule you wrote.
 A gate that could widen what runs would put a model in the position of overruling the
 user's own rules. Auto-deny exists but is off by default: a denial the user never sees
 looks, to the agent, like a tool that is broken.
@@ -205,13 +205,13 @@ looks, to the agent, like a tool that is broken.
 **Every *backend* failure path lands on `ask`.** A backend that throws, times out,
 skips a question, or answers with something that is not a probability in [0, 1] gets the
 user asked. That is the failure this design can close: the judge being silently absent
-while the gate goes on reporting that everything is fine.
+while the gate goes on reporting that everything is fine. Four of the mock assertions
+cover those four failures, and four more are their mirror in the router.
 
 The failure it cannot close is a well-formed answer that is simply wrong. A score that
 sits below the threshold on something destructive auto-allows it, and the user never sees
-a prompt to correct — which is why false allows are counted separately below and why a
-single one fails the run. Four of the mock assertions cover that path, and four
-more are its mirror in the router.
+a prompt to correct — which is why false allows are counted separately below, why a
+single one fails the run, and why no mock can stand in for that column.
 
 #### What it measures
 
@@ -236,7 +236,8 @@ describes a configuration that no longer ships. It is in
 | `allowlist` — offline | 0.20 | 23/41 · **0/42** | 7/53 · **0/43** | 8/77 · **0/76** |
 | **`llm` llama3.1:8b — the default** | **0.20** | 36/41 · **0/42** | 26/53 · **1/43** | **26/77 · 0/76** |
 
-Read the coverage row left to right: **88%, then 49%, then 34%.** The more unfamiliar the
+Read the coverage row left to right: **88% on dev, 49% on test 2, 34% on test 3.**
+Coverage is substantially lower outside the set the threshold was chosen on. The more unfamiliar the
 commands, the less the gate clears — the right direction for something that fails closed,
 and a poor advertisement for the dev-set figure. So the honest summary of what ships is
 a third of safe commands cleared with no false allows on 153 commands it had never seen,
@@ -294,8 +295,9 @@ half-finished reasoning to another mid-conversation. That is untested and not sh
 `npm run eval:routing` scores 40 dev requests and 65 held-out ones, labelled by tier.
 The caveat is bigger than the gate's and worth stating plainly: the gate has a criterion
 no model is party to, while the real routing question is *would the cheap model have been
-good enough* — and settling that needs a judge to compare two outputs. Scoring a judge
-with a judge measures nothing, so this measures agreement with my own judgement instead.
+good enough* — and settling that needs a judge to compare two outputs. So this measures
+agreement with my own tier labels, not whether the cheap model would have produced an
+adequate answer.
 
 |  | dev (40) | held out (65) |
 |---|---|---|
@@ -313,7 +315,11 @@ refactor this code to improve performance and maintainability?" at 0.047.
 
 **Routing is the weaker of the two applications, and the reason is structural.** A shell
 command carries its hazard on its face — `rm -rf /` means the same thing in every
-repository, which is why the gate reaches zero false allows on 153 commands it had never
+repository. On test 3 the gate auto-approved 26 of 77 safe commands and 0 of 76 unsafe
+ones; test 2 recorded one false allow. That hazard is legible on the command's face is a
+reading of the result rather than something the result establishes — risk can also depend
+on the working directory, the environment, or what a script it calls contains. What the
+numbers support is narrower: 153 commands it had never
 seen. The difficulty of "optimize the database query performance" depends entirely on a
 codebase the judge is never shown. Same interface, same discipline, and a question that a
 one-line state cannot answer: a limit of what was asked, not of the idea.
@@ -356,16 +362,22 @@ npm run cli -- --model their-model-id
 
 The tool layer, permission rules, session round-trips and cost maths are covered by the
 mock suite and run on every change. So is the decision layer's own logic: that the gate
-can only narrow, and the four ways each of the gate and the router can fail — a backend
+cannot touch a static `deny`, and the four ways each of the gate and the router can fail — a backend
 that throws, times out, skips a question, or answers with something that is not a
 probability in [0, 1]. Those eight assertions are the ones worth having, because they
 cover the paths that would otherwise fail quietly.
 
-`npm run eval:risk-gate` and `npm run eval:routing` run offline against the allow-list
-backend and need no key, so **the `allowlist` rows** are reproducible from a clean clone.
-The `llm` rows are not: they need a judge, and the ones published here were measured
-against a local Ollama serving `llama3.1:8b`. Reproducing them means standing that up
-first.
+Reproducing the tables takes two commands, and the bare ones are not the offline ones —
+both runners default to `--backend llm`:
+
+```bash
+npm run eval:risk-gate -- --backend allowlist     # offline, no key, no model
+npm run eval:routing   -- --backend allowlist     # offline
+```
+
+Those give the `allowlist` rows from a clean clone. The `llm` rows need a judge; the ones
+published here were measured against a local Ollama serving `llama3.1:8b`, so reproducing
+them means standing that up first.
 
 The live path — streaming, the agentic loop, tool calls, and the permission round-trip
 under piped input — has been exercised end to end against an Anthropic-compatible
@@ -380,10 +392,10 @@ the judge on another: `wc -l src/agent.ts` cleared at P=0.074 without a prompt,
 both directions including the keyboard deny, and is **not** in the mock suite: it needs a
 live server, a live model and a live judge.
 
-One thing that came out of watching it, which a scripted demo would have hidden. Denied
-`rm -rf dist`, the agent immediately retried as `rmdir /s /q dist`, and the judge
-deferred that too at 0.817 — a Windows command the allow-list models not at all and
-would have had nothing to say about.
+One thing that came out of watching it. Having denied `rm -rf dist`, I asked for
+`rmdir /s /q dist` instead, and the judge deferred that too at 0.817 — a Windows command
+the allow-list models not at all and would have had nothing to say about. It is the
+question a model can answer and a pattern list cannot.
 
 **What is not known.** Whether a hosted provider's logprobs agree with a local model's:
 that path has only ever run against Ollama. Whether a third fewer prompts feels different
@@ -405,9 +417,8 @@ being measured right and every wording refused, is in
 [docs/measurements.md](docs/measurements.md). This file is the summary.
 
 Why every backend failure here resolves to asking rather than to a default is a rule
-carried over from an earlier project of mine — a research pipeline that produced
-confident wrong numbers for months without ever raising. **A fallback must either raise,
-or write into a diagnostic that something actually checks.** Building the `llm` backend
-ran into two of those same silent returns, a label word missing from the top-K and a
-reasoning model spending its budget before answering, which is why `LlmJudge.probe()`
-exists.
+one rule: **a fallback must either raise, or write into a diagnostic that something
+actually checks.** Building the `llm` backend ran into two silent returns that needed it
+— a label word missing from the top-K, and a reasoning model spending its budget before
+answering — which is why `LlmJudge.probe()` asks a control question at startup and
+reports what the endpoint actually did.
