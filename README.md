@@ -82,8 +82,11 @@ becomes a card with the judge's own reasoning on it.
 
 ![A safe command cleared without a prompt](docs/gate-auto-approved.png)
 
-`wc -l src/agent.ts` scored 0.074 and ran — the green pill is the only trace,
-because the gate's entire effect is a prompt that does not appear.
+`wc -l src/agent.ts` scored 0.066 here and ran — the green pill is the only trace,
+because the gate's entire effect is a prompt that does not appear. (The CLI transcript
+above is a different session and scored 0.074 on the same command; the judge is not
+bit-deterministic across runs on this GPU, which is worth knowing before anyone treats a
+third decimal place as meaningful.)
 
 ![A destructive command deferred to the user](docs/gate-needs-approval.png)
 
