@@ -8,13 +8,14 @@ import type { Tool } from "./tools/base.js";
 import { globalRegistry, registerBuiltinTools } from "./tools/index.js";
 import type { ToolRegistry } from "./tools/registry.js";
 import type {
-  ModelRouter,
   AgentConfig,
   AgentEvent,
   AgentEventHandler,
   AgentResult,
   AgentUsage,
   ConversationMessage,
+  ModelRouter,
+  RetryJudge,
   RunOptions,
   ToolCallRecord,
   ToolContext,
@@ -53,17 +54,18 @@ If a task requires multiple steps, plan them out before executing.`;
 export class Agent {
   private client: ModelClient;
   /**
-   * Everything with a default. `router` and `client` are deliberately not in
+   * Everything with a default. `router`, `retryJudge` and `client` are deliberately not in
    * here: neither has a sensible sentinel the way "" serves for
    * resumeSessionId, and Required<> under exactOptionalPropertyTypes cannot
    * hold an absent value.
    */
-  private config: Required<Omit<AgentConfig, "router" | "client">>;
+  private config: Required<Omit<AgentConfig, "router" | "client" | "retryJudge">>;
   private registry: ToolRegistry;
   private permissions: PermissionSystem;
   private sessions: SessionManager;
   private eventHandlers: AgentEventHandler[] = [];
   private router: ModelRouter | undefined;
+  private retryJudge: RetryJudge | undefined;
 
   constructor(config: AgentConfig = {}, registry?: ToolRegistry) {
     this.client = config.client ?? new AnthropicClient();
@@ -88,6 +90,7 @@ export class Agent {
     };
 
     this.router = config.router;
+    this.retryJudge = config.retryJudge;
 
     this.registry = registry ?? globalRegistry;
     this.permissions = new PermissionSystem(this.config.permissions);
@@ -337,14 +340,22 @@ export class Agent {
     await this.emit({ type: "tool_start", toolUseId, toolName: tool.name, input });
 
     const start = Date.now();
-    let toolResult: ToolResult;
-    try {
-      toolResult = await tool.execute(input, context);
-    } catch (err) {
-      toolResult = {
-        type: "error",
-        message: `${tool.name} threw: ${err instanceof Error ? err.message : String(err)}`,
-      };
+    const attempt = async (): Promise<ToolResult> => {
+      try {
+        return await tool.execute(input, context);
+      } catch (err) {
+        return { type: "error", message: `${tool.name} threw: ${err instanceof Error ? err.message : String(err)}` };
+      }
+    };
+    let toolResult = await attempt();
+
+    // One more try for a call that changes nothing, if the judge calls the
+    // failure transient. Never for a dangerous tool, never twice.
+    if (toolResult.type === "error" && !tool.dangerous && this.retryJudge && !signal?.aborted) {
+      const error = toolResult.message;
+      const verdict = await this.retryJudge({ toolName: tool.name, summary: tool.summarize(input), error });
+      await this.emit({ type: "tool_retry", toolUseId, toolName: tool.name, error, verdict });
+      if (verdict.retry && !signal?.aborted) toolResult = await attempt();
     }
     const durationMs = Date.now() - start;
 

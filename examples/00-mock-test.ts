@@ -17,6 +17,7 @@ import { PermissionSystem, PermissionPresets } from "../src/permissions/index.js
 import { AllowlistJudge } from "../src/judge/allowlist.js";
 import { createRiskGate, RISK_QUESTIONS } from "../src/judge/gate.js";
 import { createModelRouter } from "../src/judge/router.js";
+import { createRetryJudge, patternRetryJudge } from "../src/judge/retry.js";
 import { UNKNOWN_PROBABILITY } from "../src/judge/types.js";
 import type { JudgeBackend, JudgeState, NoulAnswer, NoulQuestion } from "../src/judge/types.js";
 import { SessionManager } from "../src/session/manager.js";
@@ -1052,6 +1053,89 @@ check("flappy：接口只收合法的飞行状态", () => {
   if (!isFlight(newFlight(seededRandom(3)))) throw new Error("合法状态被拒");
   const bad: unknown[] = [null, { y: 1 }, { ...newFlight(seededRandom(3)), y: Number.NaN }, { ...newFlight(seededRandom(3)), pipes: [] }];
   if (bad.some((b) => isFlight(b))) throw new Error("接受了不合法的状态");
+});
+
+section("11. Retry judge");
+
+/** 前 failures 次失败、之后成功的工具；记下被调了几次 */
+class FlakyTool extends Tool {
+  readonly name: string;
+  readonly description = "Fails a few times, then works";
+  readonly inputSchema = { type: "object" as const, properties: {} };
+  override readonly dangerous: boolean;
+  calls = 0;
+  constructor(name: string, private failures: number, dangerous = false) {
+    super();
+    this.name = name;
+    this.dangerous = dangerous;
+  }
+  override async execute(): Promise<ToolResult> {
+    this.calls++;
+    return this.calls <= this.failures ? { type: "error", message: "HTTP 503 Service Unavailable" } : { type: "success", output: "ok" };
+  }
+}
+
+function retryRun(tool: FlakyTool, retryJudge: AgentConfig["retryJudge"]) {
+  const client = new ScriptedClient([calls(["r1", tool.name, {}]), said("done")]);
+  const events: AgentEvent[] = [];
+  const agent = new Agent(
+    { client, persistSessions: false, permissions: PermissionPresets.allowAll(), ...(retryJudge ? { retryJudge } : {}) },
+    new ToolRegistry().register(tool),
+  );
+  agent.on((e) => {
+    events.push(e);
+  });
+  return { client, events, run: () => agent.run("go") };
+}
+
+const alwaysTransient = createRetryJudge({ backend: fakeJudge(0.95) });
+
+await checkAsync("重试：只读工具的临时错误重试一次，模型只看到第二次的结果", async () => {
+  const tool = new FlakyTool("Fetchish", 1);
+  const r = retryRun(tool, alwaysTransient);
+  await r.run();
+  const [back] = toolResultsIn(r.client.seen[1]!);
+  if (tool.calls !== 2 || back?.content !== "ok" || back.is_error) throw new Error(`调用 ${tool.calls} 次，回传 ${JSON.stringify(back)}`);
+  const ev = r.events.find((e) => e.type === "tool_retry");
+  if (!ev || ev.type !== "tool_retry" || !ev.verdict.retry || ev.verdict.probability !== 0.95) throw new Error(`缺少 tool_retry 事件: ${JSON.stringify(ev)}`);
+});
+
+await checkAsync("重试：危险工具（Bash/Write/Edit 这类）出错不问、不重试", async () => {
+  const tool = new FlakyTool("Shellish", 1, true);
+  let asked = 0;
+  const r = retryRun(tool, async (f) => {
+    asked++;
+    return alwaysTransient(f);
+  });
+  await r.run();
+  if (tool.calls !== 1 || asked !== 0) throw new Error(`危险工具被调 ${tool.calls} 次、判断被问 ${asked} 次`);
+});
+
+await checkAsync("重试：最多一次；判断出错或拿不准就不重试，模型照常看到错误", async () => {
+  const twice = new FlakyTool("Fetchish", 5);
+  await retryRun(twice, alwaysTransient).run();
+  if (twice.calls !== 2) throw new Error(`应当只重试一次，实际调了 ${twice.calls} 次`);
+
+  const broken = new FlakyTool("Fetchish", 1);
+  const r = retryRun(broken, createRetryJudge({ backend: { name: "broken", noul: async () => { throw new Error("down"); } } }));
+  await r.run();
+  const [back] = toolResultsIn(r.client.seen[1]!);
+  if (broken.calls !== 1 || !back?.is_error) throw new Error(`判断挂了却重试了: 调 ${broken.calls} 次`);
+
+  // 后端没意见时回 0.5——不能因为"弃权"就重试
+  const unsure = new FlakyTool("Fetchish", 1);
+  await retryRun(unsure, createRetryJudge({ backend: fakeJudge(UNKNOWN_PROBABILITY) })).run();
+  if (unsure.calls !== 1) throw new Error("0.5 的弃权答案触发了重试");
+});
+
+await checkAsync("重试：默认的规则判断认错误码，不被字面上的 terminated 骗", async () => {
+  const says = async (error: string) => (await patternRetryJudge({ toolName: "WebFetch", summary: "", error })).retry;
+  for (const e of ["HTTP 503 Service Unavailable: x", "Fetch failed: TypeError: fetch failed (cause: ECONNRESET)", "HTTP 429 Too Many Requests: x"]) {
+    if (!(await says(e))) throw new Error(`该重试没重试: ${e}`);
+  }
+  for (const e of ["HTTP 404 Not Found: x", "Invalid regex: SyntaxError: Invalid regular expression: /(a/: Unterminated group", "File not found: a.ts"]) {
+    if (await says(e)) throw new Error(`不该重试却重试: ${e}`);
+  }
 });
 
 // ─────────────────────────────────────────────

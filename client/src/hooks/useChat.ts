@@ -27,6 +27,8 @@ export interface ToolCall {
   gate?: GateVerdict | undefined;
   /** Set once a human answered a call the gate deferred. */
   approvedBy?: "user" | undefined;
+  /** The first attempt failed and the retry judge was asked about it. */
+  retry?: { retry: boolean; reason: string; error: string } | undefined;
 }
 
 /** A tool call parked on the server, waiting for the user to decide. */
@@ -184,6 +186,22 @@ export function useChat(
                   };
                   last.toolCalls = (last.toolCalls ?? []).map((tc) =>
                     tc.id === (data["id"] as string) ? { ...tc, gate: verdict } : tc,
+                  );
+                  break;
+                }
+
+                case "retry_verdict": {
+                  last.toolCalls = (last.toolCalls ?? []).map((tc) =>
+                    tc.id === (data["id"] as string)
+                      ? {
+                          ...tc,
+                          retry: {
+                            retry: data["retry"] as boolean,
+                            reason: data["reason"] as string,
+                            error: data["error"] as string,
+                          },
+                        }
+                      : tc,
                   );
                   break;
                 }

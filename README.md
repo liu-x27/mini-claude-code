@@ -478,6 +478,40 @@ where parallel slots usually pay. The same judge answers Flappy's one-line quest
 15 ms at the median against the snake's 30, which points the same way: for a decision
 layer the lever is a shorter question, or a smaller model, not more concurrency.
 
+### Where a model lost: retrying a failed read
+
+The last decision the loop makes on its own: when a call that changes nothing — Read,
+Glob, Grep, WebFetch — fails, is it worth one more try before the model sees the error?
+A 503 or a reset connection is usually gone a second later, and retrying costs one call;
+handing it to the model costs a turn, in which the model mostly retries it itself. A
+missing file or a 404 will not change. `retryJudge` in `AgentConfig` makes that call —
+never for Bash, Write or Edit, whose safety an error message cannot vouch for, never
+twice, and never when the judge fails.
+
+Built as a decision-layer question first, and measured against the pattern list anyone
+would write (`npm run eval:retry`, 36 failures in our tools' own formats, 17 transient):
+
+|  | right | wasted retries | missed retries |
+|---|---|---|---|
+| llama3.1:8b, first wording | 25/36 | 0/19 | 11/17 |
+| llama3.1:8b, best of four wordings | 29/36 | 6/19 | 1/17 |
+| `TRANSIENT_ERROR_PATTERNS` | **36/36** | 0/19 | 0/17 |
+
+So the server retries by pattern, and the model judge is there to measure. The first
+wording called every socket reset and timeout permanent; the best one goes the other
+way and retries 404s and missing paths. The pattern list was written by me in the same
+sitting as the cases, so 36/36 is an upper bound — its first draft counted "Unterminated
+group", from a regex error, as a dropped connection — but the gap is not close. The
+reason is the risk gate's argument turned round: `rmdir /s /q dist` is dangerous with no
+keyword saying so, which is what a model is for, while `ECONNRESET` and `503` mean one
+thing in every message they appear in. A decision layer is worth its latency where the
+answer is not already written on the input.
+
+The other half of this item, a judge that decides the agent should stop, is not built.
+The loop already stops when the model ends its turn, and the failure worth catching —
+the same failing call made again and again — is better found by comparing calls than by
+asking a model whether it looks stuck.
+
 ## Development
 
 ```bash

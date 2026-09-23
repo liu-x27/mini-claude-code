@@ -146,6 +146,28 @@ export interface GateVerdict {
  */
 export type ModelRouter = (prompt: string) => Promise<RouteVerdict>;
 
+/** A tool call that failed, as the retry judge is shown it. */
+export interface ToolFailure {
+  toolName: string;
+  /** The call as a person would name it — the tool's own summary of its input. */
+  summary: string;
+  error: string;
+}
+
+export interface RetryVerdict {
+  retry: boolean;
+  /** P(the error is transient), or undefined when the judge gave no answer. */
+  probability: number | undefined;
+  reason: string;
+  latencyMs?: number;
+}
+
+/**
+ * Decides whether a failed call that changes nothing gets one more try
+ * before the model sees the error — see `createRetryJudge`.
+ */
+export type RetryJudge = (failure: ToolFailure) => Promise<RetryVerdict>;
+
 export interface RouteVerdict {
   model: ModelId;
   /** True when the router picked the cheaper model. */
@@ -253,6 +275,14 @@ export interface AgentConfig {
    * back to the expensive one on any failure.
    */
   router?: ModelRouter;
+
+  /**
+   * Optional judge consulted when a tool that is not `dangerous` fails: if it
+   * calls the error transient, the call is made once more, and the model sees
+   * only the second result. Off by default. Never consulted for Bash, Write
+   * or Edit, and never twice for one call.
+   */
+  retryJudge?: RetryJudge;
 }
 
 export interface SubagentDefinition {
@@ -337,6 +367,7 @@ export type AgentEvent =
       result: ToolResult;
       durationMs: number;
     }
+  | { type: "tool_retry"; toolUseId: string; toolName: string; error: string; verdict: RetryVerdict }
   | { type: "turn_start"; turn: number }
   | { type: "turn_end"; turn: number; usage: AgentUsage }
   | { type: "done"; result: AgentResult };

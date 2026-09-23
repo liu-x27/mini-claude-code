@@ -4,6 +4,7 @@ import { Agent } from "../src/agent.js";
 import { AllowlistJudge } from "../src/judge/allowlist.js";
 import { createRiskGate } from "../src/judge/gate.js";
 import { LlmJudge } from "../src/judge/llm.js";
+import { patternRetryJudge } from "../src/judge/retry.js";
 import type { ChoiceBackend, JudgeBackend } from "../src/judge/types.js";
 import { AnthropicClient } from "../src/model/anthropic.js";
 import { OpenAICompatibleClient } from "../src/model/openai.js";
@@ -357,6 +358,9 @@ app.post("/api/chat", async (req, res) => {
     stream: true,
     ...(allowedTools?.length ? { allowedTools } : {}),
     ...(sessionId ? { resumeSessionId: sessionId } : {}),
+    // A read that failed on a timeout or a 503 gets one more try before the
+    // model sees it. By pattern, not by model: see eval/retry.
+    retryJudge: patternRetryJudge,
     // Ask before Bash/Write/Edit, let the gate clear the easy ones, and send
     // whatever is left to the browser. The previous behaviour here was
     // `defaultMode: "allow"` — the web UI ran every tool call without asking
@@ -468,6 +472,15 @@ function forward(event: AgentEvent, send: (event: string, data: unknown) => void
         turns: event.result.turns,
         stopReason: event.result.stopReason,
         usage: webUsage(event.result.usage),
+      });
+      break;
+    case "tool_retry":
+      send("retry_verdict", {
+        id: event.toolUseId,
+        retry: event.verdict.retry,
+        probability: event.verdict.probability,
+        reason: event.verdict.reason,
+        error: event.error,
       });
       break;
     case "tool_start":

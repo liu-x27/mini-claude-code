@@ -458,6 +458,15 @@ kbd {
 .gate-dot {
   display: none;
 }
+/* The first attempt failed on something temporary and was tried again. */
+.retry-badge {
+  font: 11px var(--mono);
+  color: var(--info);
+  padding: 2px 7px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--info) 45%, transparent);
+  white-space: nowrap;
+}
 
 /* approval */
 

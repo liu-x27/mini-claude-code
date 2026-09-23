@@ -60,6 +60,11 @@ export function ToolCall({
         <span className="tool-arg">{primaryArg(tc.input)}</span>
         {refNo !== undefined && <sup className="tool-ref">{refNo}</sup>}
         <GateBadge gate={tc.gate} approvedByUser={tc.approvedBy === "user"} />
+        {tc.retry?.retry && (
+          <span className="retry-badge" title={`First attempt: ${tc.retry.error} — ${tc.retry.reason}`}>
+            retried
+          </span>
+        )}
         <span className="tool-state">
           {tc.status === "running" && !waiting && <span className="spinner" aria-hidden="true" />}
           {stateLabel(tc, waiting)}
