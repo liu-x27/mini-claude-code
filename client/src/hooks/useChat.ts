@@ -190,6 +190,12 @@ export function useChat(
                   break;
                 }
 
+                case "stopped": {
+                  // The run ended itself: say why, where the reply would be.
+                  last.error = `Stopped: ${data["reason"] as string}.`;
+                  break;
+                }
+
                 case "retry_verdict": {
                   last.toolCalls = (last.toolCalls ?? []).map((tc) =>
                     tc.id === (data["id"] as string)

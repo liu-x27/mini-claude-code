@@ -168,6 +168,38 @@ export interface RetryVerdict {
  */
 export type RetryJudge = (failure: ToolFailure) => Promise<RetryVerdict>;
 
+/** One recent call as the stop judge sees it. */
+export interface TracedCall {
+  tool: string;
+  input: Record<string, unknown>;
+  /** The call as a person would name it. */
+  summary: string;
+  ok: boolean;
+  /** The start of its output or error. */
+  outcome: string;
+}
+
+export interface RunTrace {
+  prompt: string;
+  turn: number;
+  /** The most recent calls, oldest first. */
+  recent: TracedCall[];
+}
+
+export interface StopVerdict {
+  stop: boolean;
+  /** P(stuck), or undefined when no model was asked. */
+  probability: number | undefined;
+  reason: string;
+  latencyMs?: number;
+}
+
+/**
+ * Decides, after each turn's tool calls, whether the run should end before
+ * the model says it is done — see `createRepeatStopJudge`.
+ */
+export type StopJudge = (trace: RunTrace) => Promise<StopVerdict>;
+
 export interface RouteVerdict {
   model: ModelId;
   /** True when the router picked the cheaper model. */
@@ -283,6 +315,14 @@ export interface AgentConfig {
    * or Edit, and never twice for one call.
    */
   retryJudge?: RetryJudge;
+
+  /**
+   * Optional judge consulted after every turn that made tool calls. When it
+   * says stop, the run ends with `stopReason: "stuck"` and the verdict's
+   * reason as its text; the session is saved as it would be after any other
+   * ending. Off by default. A judge that fails means "keep going".
+   */
+  stopJudge?: StopJudge;
 }
 
 export interface SubagentDefinition {
@@ -323,7 +363,8 @@ export interface AgentResult {
   text: string;
   /**
    * Stop reason from the last API call, or "max_turns" when the turn limit
-   * cut the run short, or "aborted" when the caller's signal did.
+   * cut the run short, "aborted" when the caller's signal did, or "stuck"
+   * when the stop judge ended it.
    */
   stopReason: string;
   /** Number of agentic turns taken */
@@ -368,6 +409,7 @@ export type AgentEvent =
       durationMs: number;
     }
   | { type: "tool_retry"; toolUseId: string; toolName: string; error: string; verdict: RetryVerdict }
+  | { type: "stop_check"; turn: number; verdict: StopVerdict }
   | { type: "turn_start"; turn: number }
   | { type: "turn_end"; turn: number; usage: AgentUsage }
   | { type: "done"; result: AgentResult };

@@ -5,6 +5,7 @@ import { AllowlistJudge } from "../src/judge/allowlist.js";
 import { createRiskGate } from "../src/judge/gate.js";
 import { LlmJudge } from "../src/judge/llm.js";
 import { patternRetryJudge } from "../src/judge/retry.js";
+import { anyStopJudge, createRepeatStopJudge, createStopJudge } from "../src/judge/stop.js";
 import type { ChoiceBackend, JudgeBackend } from "../src/judge/types.js";
 import { AnthropicClient } from "../src/model/anthropic.js";
 import { OpenAICompatibleClient } from "../src/model/openai.js";
@@ -361,6 +362,12 @@ app.post("/api/chat", async (req, res) => {
     // A read that failed on a timeout or a 503 gets one more try before the
     // model sees it. By pattern, not by model: see eval/retry.
     retryJudge: patternRetryJudge,
+    // End a run that keeps failing the same way. The repeat check always;
+    // the model beside it when there is one, for the same failure in a
+    // different form each time. See eval/stop.
+    stopJudge: arenaJudge
+      ? anyStopJudge(createRepeatStopJudge(), createStopJudge({ backend: arenaJudge }))
+      : createRepeatStopJudge(),
     // Ask before Bash/Write/Edit, let the gate clear the easy ones, and send
     // whatever is left to the browser. The previous behaviour here was
     // `defaultMode: "allow"` — the web UI ran every tool call without asking
@@ -473,6 +480,10 @@ function forward(event: AgentEvent, send: (event: string, data: unknown) => void
         stopReason: event.result.stopReason,
         usage: webUsage(event.result.usage),
       });
+      break;
+    case "stop_check":
+      // Only a stop is news; a "keep going" every turn is not.
+      if (event.verdict.stop) send("stopped", { reason: event.verdict.reason });
       break;
     case "tool_retry":
       send("retry_verdict", {

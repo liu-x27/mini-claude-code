@@ -18,6 +18,7 @@ import { AllowlistJudge } from "../src/judge/allowlist.js";
 import { createRiskGate, RISK_QUESTIONS } from "../src/judge/gate.js";
 import { createModelRouter } from "../src/judge/router.js";
 import { createRetryJudge, patternRetryJudge } from "../src/judge/retry.js";
+import { anyStopJudge, createRepeatStopJudge, createStopJudge } from "../src/judge/stop.js";
 import { UNKNOWN_PROBABILITY } from "../src/judge/types.js";
 import type { JudgeBackend, JudgeState, NoulAnswer, NoulQuestion } from "../src/judge/types.js";
 import { SessionManager } from "../src/session/manager.js";
@@ -1163,6 +1164,58 @@ await checkAsync("rubric()：一次前向给出 1–5 的分布、期望和离�
   } finally {
     await fake.close();
   }
+});
+
+section("13. Stop judge");
+
+await checkAsync("停：同一个调用第三次同样失败就结束，stopReason 是 stuck，不再多调一轮模型", async () => {
+  const booms = [1, 2, 3, 4].map((n) => calls([`b${n}`, "Boom", {}]));
+  const client = new ScriptedClient([...booms, said("never reached")]);
+  const { agent, events } = scriptedAgent(client, { stopJudge: createRepeatStopJudge() });
+  const result = await agent.run("go");
+  if (result.stopReason !== "stuck" || result.turns !== 3) throw new Error(`应在第 3 轮停: ${result.stopReason} / ${result.turns} 轮`);
+  if (client.seen.length !== 3) throw new Error(`模型被调了 ${client.seen.length} 次`);
+  if (!result.text.startsWith("Stopped:") || !events.some((e) => e.type === "stop_check" && e.verdict.stop)) {
+    throw new Error(`缺少停止说明或事件: ${result.text}`);
+  }
+});
+
+await checkAsync("停：每次输入不同就不算卡住；判断出错一律继续跑", async () => {
+  const echoes = [1, 2, 3, 4].map((n) => calls([`e${n}`, "Echo", { text: `t${n}` }]));
+  const ok = scriptedAgent(new ScriptedClient([...echoes, said("done")]), { stopJudge: createRepeatStopJudge() });
+  const r1 = await ok.agent.run("go");
+  if (r1.stopReason !== "end_turn") throw new Error(`不该停: ${r1.stopReason}`);
+
+  const booms = [1, 2, 3].map((n) => calls([`b${n}`, "Boom", {}]));
+  const broken = scriptedAgent(new ScriptedClient([...booms, said("done")]), {
+    stopJudge: async () => {
+      throw new Error("judge down");
+    },
+  }).agent;
+  const r2 = await broken.run("go").then(
+    (r) => r.stopReason,
+    (e: Error) => `threw: ${e.message}`,
+  );
+  if (r2 !== "end_turn") throw new Error(`判断出错时应照常跑完: ${r2}`);
+});
+
+await checkAsync("调用方自己写的判断抛异常时，循环当它不存在：不重试、不停、不崩", async () => {
+  const flaky = new FlakyTool("Fetchish", 1);
+  const r = retryRun(flaky, async () => {
+    throw new Error("custom retry judge down");
+  });
+  const result = await r.run();
+  if (flaky.calls !== 1 || result.stopReason !== "end_turn") throw new Error(`调 ${flaky.calls} 次，结束于 ${result.stopReason}`);
+});
+
+await checkAsync("停：组合判断先问便宜的，说停就不再问模型；模型判断不到 4 次调用不问", async () => {
+  const backend = fakeJudge(0.99);
+  const combined = anyStopJudge(createRepeatStopJudge(), createStopJudge({ backend }));
+  const repeated = { tool: "Boom", input: {}, summary: "Boom", ok: false, outcome: "Boom threw: kaboom" };
+  const v = await combined({ prompt: "go", turn: 3, recent: [repeated, repeated, repeated] });
+  if (!v.stop || backend.calls !== 0) throw new Error(`规则已判停却还问了模型 ${backend.calls} 次`);
+  const short = await createStopJudge({ backend })({ prompt: "go", turn: 2, recent: [repeated, { ...repeated, outcome: "other" }] });
+  if (short.stop || backend.calls !== 0) throw new Error("调用不足 4 次也问了模型");
 });
 
 // ─────────────────────────────────────────────

@@ -507,10 +507,45 @@ keyword saying so, which is what a model is for, while `ECONNRESET` and `503` me
 thing in every message they appear in. A decision layer is worth its latency where the
 answer is not already written on the input.
 
-The other half of this item, a judge that decides the agent should stop, is not built.
-The loop already stops when the model ends its turn, and the failure worth catching —
-the same failing call made again and again — is better found by comparing calls than by
-asking a model whether it looks stuck.
+### Knowing when to stop
+
+The loop stops when the model ends its turn, and at `maxTurns`. What neither catches is
+the run that will spend every turn up to the limit getting nowhere. `stopJudge` in
+`AgentConfig` is asked after each turn of tool calls; when it says stop, the run ends
+with `stopReason: "stuck"`, the reason as its text, and the session saved as after any
+other ending. The errors are weighted: a wrong stop interrupts a run that was working,
+a missed one costs turns up to a limit that exists anyway. So the repeat check needs the
+same failure three times, the model is not asked before four calls and stops only at
+P ≥ 0.8, and a judge that fails means carry on.
+
+Two judges, and here, unlike the retry, the model earns its place. `npm run eval:stop`,
+runs labelled stuck or not, in six kinds: the same call failing the same way (`exact`);
+the same failing approach reworded — a path with and without `./`, `cat` then `head` on a
+file that is not there, four ways to run a script missing the same module (`variant`);
+and four kinds of progress, including the two most easily mistaken for being stuck:
+the same command polled while its output changes, and a failure that shrinks, 5 failing
+tests then 3 then 1.
+
+| wrong stops / missed stops | dev, 27 runs | held out, 12 runs |
+|---|---|---|
+| same call, same failure, 3 times | 0 / 6 | 0 / 4 |
+| llama3.1:8b | 0 / 1 | 0 / 1 |
+| both, repeat check first | **0 / 0** | **0 / 0** |
+
+Comparing calls cannot miss an exact repeat and cannot see a reworded one; the model
+sees the reworded ones and is not asked until there are four calls, which is its one
+miss in each set. The server runs both. The model's wording was chosen on the dev set,
+after a first version that read "failed" and answered "stuck" — it stopped all three
+shrinking failures, at 0.90–0.95, and a run whose last call had passed. Asking whether the
+*results are changing*, and saying whether the last call succeeded, moved every
+progressing run to 0.71 or below. The held-out set was written after that and read
+once; it is 12 runs, and its log is in `eval/stop/testset.ts`.
+
+Watched on the real loop, llama3.1:8b told to read a missing file five times: it made
+all five calls in one turn, the repeat check stopped the run after it, and the browser
+got `Stopped: Read(missing-file-xyz.txt) failed 5 times the same way` — one turn instead
+of the five it was told to spend. The retry was watched the same way, against a local
+server that answers 503: one retry, then the error to the model.
 
 ### Are the gate's numbers worth thresholding? And a third primitive
 

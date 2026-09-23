@@ -17,9 +17,11 @@ import type {
   ModelRouter,
   RetryJudge,
   RunOptions,
+  StopJudge,
   ToolCallRecord,
   ToolContext,
   ToolResult,
+  TracedCall,
 } from "./types.js";
 import { estimateCost } from "./utils/cost.js";
 import { logger } from "./utils/logger.js";
@@ -54,18 +56,19 @@ If a task requires multiple steps, plan them out before executing.`;
 export class Agent {
   private client: ModelClient;
   /**
-   * Everything with a default. `router`, `retryJudge` and `client` are deliberately not in
+   * Everything with a default. The judges, `router` and `client` are deliberately not in
    * here: neither has a sensible sentinel the way "" serves for
    * resumeSessionId, and Required<> under exactOptionalPropertyTypes cannot
    * hold an absent value.
    */
-  private config: Required<Omit<AgentConfig, "router" | "client" | "retryJudge">>;
+  private config: Required<Omit<AgentConfig, "router" | "client" | "retryJudge" | "stopJudge">>;
   private registry: ToolRegistry;
   private permissions: PermissionSystem;
   private sessions: SessionManager;
   private eventHandlers: AgentEventHandler[] = [];
   private router: ModelRouter | undefined;
   private retryJudge: RetryJudge | undefined;
+  private stopJudge: StopJudge | undefined;
 
   constructor(config: AgentConfig = {}, registry?: ToolRegistry) {
     this.client = config.client ?? new AnthropicClient();
@@ -91,6 +94,7 @@ export class Agent {
 
     this.router = config.router;
     this.retryJudge = config.retryJudge;
+    this.stopJudge = config.stopJudge;
 
     this.registry = registry ?? globalRegistry;
     this.permissions = new PermissionSystem(this.config.permissions);
@@ -202,6 +206,21 @@ export class Agent {
 
         // Append tool results as user message
         messages.push({ role: "user", content: toolResults });
+
+        // Every tool_use has its result by now, so stopping here leaves a
+        // transcript that resumes like any other.
+        if (this.stopJudge && !signal?.aborted) {
+          const verdict = await settle(
+            () => this.stopJudge!({ prompt, turn, recent: this.trace(toolCalls) }),
+            (reason) => ({ stop: false, probability: undefined, reason }),
+          );
+          await this.emit({ type: "stop_check", turn, verdict });
+          if (verdict.stop) {
+            finalStopReason = "stuck";
+            finalText = `Stopped: ${verdict.reason}.`;
+            break;
+          }
+        }
         continue;
       }
 
@@ -353,7 +372,10 @@ export class Agent {
     // failure transient. Never for a dangerous tool, never twice.
     if (toolResult.type === "error" && !tool.dangerous && this.retryJudge && !signal?.aborted) {
       const error = toolResult.message;
-      const verdict = await this.retryJudge({ toolName: tool.name, summary: tool.summarize(input), error });
+      const verdict = await settle(
+        () => this.retryJudge!({ toolName: tool.name, summary: tool.summarize(input), error }),
+        (reason) => ({ retry: false, probability: undefined, reason }),
+      );
       await this.emit({ type: "tool_retry", toolUseId, toolName: tool.name, error, verdict });
       if (verdict.retry && !signal?.aborted) toolResult = await attempt();
     }
@@ -368,6 +390,22 @@ export class Agent {
       content: toolResult.type === "success" ? toolResult.output : `Error: ${toolResult.message}`,
       is_error: toolResult.type === "error",
     };
+  }
+
+  /** The last few calls, as the stop judge sees them. */
+  private trace(records: ToolCallRecord[]): TracedCall[] {
+    return records.slice(-8).map((r) => {
+      const tool = this.registry.get(r.toolName);
+      const ok = r.result.type === "success";
+      const text = r.result.type === "success" ? r.result.output : r.result.message;
+      return {
+        tool: r.toolName,
+        input: r.input,
+        summary: tool ? `${r.toolName}(${tool.summarize(r.input)})` : r.toolName,
+        ok,
+        outcome: text.replace(/\s+/g, " ").trim().slice(0, 200),
+      };
+    });
   }
 
   /**
@@ -476,4 +514,19 @@ function chunk<T>(arr: T[], size: number): T[][] {
     chunks.push(arr.slice(i, i + size));
   }
   return chunks;
+}
+
+/**
+ * A judge's verdict, or `fallback` if the judge throws. The judges shipped in
+ * src/judge never throw, but a caller's own can, and a judge that fails has
+ * to mean "carry on as if there were no judge" — not take the run down.
+ */
+async function settle<T>(judge: () => Promise<T>, fallback: (reason: string) => T): Promise<T> {
+  try {
+    return await judge();
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    logger.warn(`Judge failed, carrying on without it: ${message}`);
+    return fallback(`judge failed: ${message}`);
+  }
 }
