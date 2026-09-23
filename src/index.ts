@@ -18,6 +18,17 @@
 // Core
 export { Agent } from "./agent.js";
 
+// Model APIs — what the agent loop calls
+export { AnthropicClient, OpenAICompatibleClient, toOpenAIMessages } from "./model/index.js";
+export type {
+  AnthropicClientOptions,
+  ModelClient,
+  ModelDelta,
+  ModelRequest,
+  ModelResponse,
+  OpenAICompatibleClientOptions,
+} from "./model/index.js";
+
 // Tools
 export { Tool } from "./tools/base.js";
 export { ToolRegistry, globalRegistry } from "./tools/registry.js";
@@ -73,6 +84,7 @@ export type {
   AgentEvent,
   AgentEventHandler,
   AgentUsage,
+  RunOptions,
   ModelId,
   ToolResult,
   ToolContext,

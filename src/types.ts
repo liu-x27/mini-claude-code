@@ -1,4 +1,5 @@
 import type Anthropic from "@anthropic-ai/sdk";
+import type { ModelClient } from "./model/types.js";
 
 // ─────────────────────────────────────────────
 // Model & API
@@ -95,6 +96,12 @@ export interface PermissionRequest {
   toolName: string;
   input: Record<string, unknown>;
   description: string;
+  /**
+   * The tool call being asked about, when there is one. The agent runs a
+   * batch of calls concurrently, so a host that reports verdicts or shows
+   * approval cards needs this to tell them apart.
+   */
+  toolUseId?: string | undefined;
 }
 
 /**
@@ -172,6 +179,13 @@ export interface Session {
 // ─────────────────────────────────────────────
 
 export interface AgentConfig {
+  /**
+   * The model API to call. Defaults to an `AnthropicClient` configured from
+   * the environment; pass an `OpenAICompatibleClient` for any Chat
+   * Completions endpoint, or a scripted one in tests.
+   */
+  client?: ModelClient;
+
   /** Claude model to use (default: claude-opus-5) */
   model?: ModelId;
 
@@ -253,10 +267,23 @@ export interface AgentUsage {
   estimatedCostUsd: number;
 }
 
+export interface RunOptions {
+  /**
+   * Stops the run: the model call in flight is cancelled, tool calls not yet
+   * started are skipped, and no further turn begins. The run then returns
+   * normally with `stopReason: "aborted"` and the session saved up to that
+   * point, so it can be resumed.
+   */
+  signal?: AbortSignal | undefined;
+}
+
 export interface AgentResult {
   /** Final text response from the agent */
   text: string;
-  /** Stop reason from the last API call */
+  /**
+   * Stop reason from the last API call, or "max_turns" when the turn limit
+   * cut the run short, or "aborted" when the caller's signal did.
+   */
   stopReason: string;
   /** Number of agentic turns taken */
   turns: number;
@@ -279,11 +306,26 @@ export interface ToolCallRecord {
 // Events (for streaming / hooks)
 // ─────────────────────────────────────────────
 
+/**
+ * Every tool call the model makes produces `tool_request` first, then either
+ * `tool_denied` (it never ran) or `tool_start` and `tool_end`. All three
+ * carry the call's `toolUseId`: calls in a batch run concurrently, so their
+ * events interleave.
+ */
 export type AgentEvent =
+  | { type: "session"; sessionId: string; resumed: boolean }
   | { type: "text_delta"; delta: string }
   | { type: "thinking_delta"; delta: string }
-  | { type: "tool_start"; toolName: string; input: Record<string, unknown> }
-  | { type: "tool_end"; toolName: string; result: ToolResult; durationMs: number }
+  | { type: "tool_request"; toolUseId: string; toolName: string; input: Record<string, unknown> }
+  | { type: "tool_denied"; toolUseId: string; toolName: string; reason: string }
+  | { type: "tool_start"; toolUseId: string; toolName: string; input: Record<string, unknown> }
+  | {
+      type: "tool_end";
+      toolUseId: string;
+      toolName: string;
+      result: ToolResult;
+      durationMs: number;
+    }
   | { type: "turn_start"; turn: number }
   | { type: "turn_end"; turn: number; usage: AgentUsage }
   | { type: "done"; result: AgentResult };

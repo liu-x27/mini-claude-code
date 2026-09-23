@@ -21,7 +21,18 @@ import { UNKNOWN_PROBABILITY } from "../src/judge/types.js";
 import type { JudgeBackend, JudgeState, NoulAnswer, NoulQuestion } from "../src/judge/types.js";
 import { SessionManager } from "../src/session/manager.js";
 import { estimateCost, formatCost } from "../src/utils/cost.js";
-import type { ToolContext } from "../src/types.js";
+import type {
+  AgentConfig,
+  AgentEvent,
+  PermissionDecision,
+  ToolContext,
+  ToolResult,
+} from "../src/types.js";
+import { Agent } from "../src/agent.js";
+import { Tool } from "../src/tools/base.js";
+import { toOpenAIMessages } from "../src/model/openai.js";
+import type { ModelClient, ModelRequest, ModelResponse } from "../src/model/types.js";
+import type Anthropic from "@anthropic-ai/sdk";
 import * as os from "node:os";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
@@ -592,6 +603,207 @@ check("claude-opus-5 费用计算", () => {
 check("formatCost 格式化", () => {
   const s = formatCost(0.00042);
   if (!s.startsWith("$")) throw new Error("应该以 $ 开头");
+});
+
+// ─────────────────────────────────────────────
+// 7. Agent Loop（脚本化的模型，不联网）
+// ─────────────────────────────────────────────
+section("7. Agent Loop");
+
+const noUsage = { inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0 };
+const said = (text: string): ModelResponse => ({
+  content: [{ type: "text", text }],
+  stopReason: "end_turn",
+  usage: noUsage,
+});
+const calls = (...uses: Array<[id: string, name: string, input: Record<string, unknown>]>): ModelResponse => ({
+  content: uses.map(([id, name, input]) => ({ type: "tool_use" as const, id, name, input })),
+  stopReason: "tool_use",
+  usage: noUsage,
+});
+
+/** 按剧本逐轮回复的模型；记下每次请求时的对话，供断言用 */
+class ScriptedClient implements ModelClient {
+  readonly name = "scripted";
+  readonly seen: ModelRequest["messages"][] = [];
+  constructor(private script: Array<ModelResponse | ((req: ModelRequest) => Promise<ModelResponse>)>) {}
+  async create(request: ModelRequest): Promise<ModelResponse> {
+    this.seen.push(JSON.parse(JSON.stringify(request.messages)));
+    const next = this.script.shift();
+    if (!next) throw new Error("剧本已用完，循环多跑了一轮");
+    return typeof next === "function" ? next(request) : next;
+  }
+}
+
+class EchoTool extends Tool {
+  readonly name = "Echo";
+  readonly description = "Echo the text back";
+  readonly inputSchema = { type: "object" as const, properties: { text: { type: "string" as const } } };
+  override async execute(input: Record<string, unknown>): Promise<ToolResult> {
+    return { type: "success", output: String(input["text"]) };
+  }
+}
+
+class BoomTool extends Tool {
+  readonly name = "Boom";
+  readonly description = "Always throws";
+  readonly inputSchema = { type: "object" as const, properties: {} };
+  override async execute(): Promise<ToolResult> {
+    throw new Error("kaboom");
+  }
+}
+
+const loopRegistry = new ToolRegistry().register(new EchoTool(), new BoomTool());
+
+function scriptedAgent(client: ModelClient, config: Omit<AgentConfig, "client"> = {}) {
+  const events: AgentEvent[] = [];
+  const agent = new Agent(
+    { client, persistSessions: false, permissions: PermissionPresets.allowAll(), ...config },
+    loopRegistry,
+  );
+  agent.on((e) => {
+    events.push(e);
+  });
+  return { agent, events };
+}
+
+/** 最后一条 user 消息里的 tool_result 块 */
+function toolResultsIn(messages: ModelRequest["messages"]) {
+  const last = messages[messages.length - 1];
+  if (!last || typeof last.content === "string") return [];
+  return last.content.filter((b): b is Anthropic.ToolResultBlockParam => b.type === "tool_result");
+}
+
+await checkAsync("工具往返：tool_use → 执行 → 结果带着 id 回给模型", async () => {
+  const client = new ScriptedClient([calls(["t1", "Echo", { text: "hi" }]), said("done")]);
+  const { agent, events } = scriptedAgent(client);
+  const result = await agent.run("go");
+
+  if (result.text !== "done" || result.stopReason !== "end_turn" || result.turns !== 2) {
+    throw new Error(`结果不对: ${JSON.stringify({ text: result.text, stop: result.stopReason, turns: result.turns })}`);
+  }
+  const [back] = toolResultsIn(client.seen[1]!);
+  if (back?.tool_use_id !== "t1" || back.content !== "hi") throw new Error(`回传的结果不对: ${JSON.stringify(back)}`);
+  const lifecycle = events
+    .filter((e) => "toolUseId" in e && e.toolUseId === "t1")
+    .map((e) => e.type)
+    .join(",");
+  if (lifecycle !== "tool_request,tool_start,tool_end") throw new Error(`t1 的事件序列: ${lifecycle}`);
+});
+
+await checkAsync("最后一轮正常结束不误报 max_turns；最后一轮还要工具才算", async () => {
+  const clean = await scriptedAgent(new ScriptedClient([said("ok")]), { maxTurns: 1 }).agent.run("go");
+  if (clean.stopReason !== "end_turn") throw new Error(`最后一轮 end_turn 被报成了 ${clean.stopReason}`);
+
+  const cut = await scriptedAgent(new ScriptedClient([calls(["t1", "Echo", { text: "x" }])]), {
+    maxTurns: 1,
+  }).agent.run("go");
+  if (cut.stopReason !== "max_turns") throw new Error(`被轮数截断却报成了 ${cut.stopReason}`);
+});
+
+await checkAsync("工具抛异常只算这一次调用失败，同批调用和这一轮都不丢", async () => {
+  const client = new ScriptedClient([calls(["t1", "Boom", {}], ["t2", "Echo", { text: "still here" }]), said("ok")]);
+  const result = await scriptedAgent(client).agent.run("go");
+  if (result.stopReason !== "end_turn") throw new Error(`run 没跑完: ${result.stopReason}`);
+  const [boom, echo] = toolResultsIn(client.seen[1]!);
+  if (!boom?.is_error || !String(boom.content).includes("kaboom")) throw new Error(`Boom 的结果: ${JSON.stringify(boom)}`);
+  if (echo?.is_error || echo?.content !== "still here") throw new Error(`Echo 的结果: ${JSON.stringify(echo)}`);
+});
+
+await checkAsync("被拒的调用发 tool_denied，不发 tool_start", async () => {
+  const client = new ScriptedClient([calls(["t1", "Echo", { text: "x" }]), said("ok")]);
+  const { agent, events } = scriptedAgent(client, {
+    permissions: { defaultMode: "allow", rules: [{ tool: "Echo", mode: "deny" }] },
+  });
+  await agent.run("go");
+  const types = events.filter((e) => "toolUseId" in e).map((e) => e.type);
+  if (types.join(",") !== "tool_request,tool_denied") throw new Error(`事件序列: ${types.join(",")}`);
+  if (!toolResultsIn(client.seen[1]!)[0]?.is_error) throw new Error("模型应该收到一个错误结果");
+});
+
+await checkAsync("中止：不再开新一轮，会话照样保存、可以续上", async () => {
+  const dir = path.join(os.tmpdir(), `agent_abort_${Date.now()}`);
+  const controller = new AbortController();
+  const client = new ScriptedClient([calls(["t1", "Echo", { text: "x" }]), said("never")]);
+  const { agent } = scriptedAgent(client, { persistSessions: true, sessionDir: dir });
+  agent.on((e) => {
+    if (e.type === "tool_end") controller.abort();
+  });
+
+  const result = await agent.run("go", { signal: controller.signal });
+  if (result.stopReason !== "aborted") throw new Error(`stopReason: ${result.stopReason}`);
+  if (client.seen.length !== 1) throw new Error(`中止后又调了 ${client.seen.length - 1} 次模型`);
+
+  const saved = await new SessionManager(dir).load(result.sessionId);
+  const roles = saved?.messages.map((m) => m.role).join(",");
+  if (roles !== "user,assistant,user") throw new Error(`保存的对话: ${roles}`);
+  if (toolResultsIn(saved!.messages)[0]?.tool_use_id !== "t1") throw new Error("tool_use 没有配上 tool_result，续不上");
+});
+
+await checkAsync("中止正在进行的模型调用", async () => {
+  const controller = new AbortController();
+  const client = new ScriptedClient([
+    (req) =>
+      new Promise((_, reject) => {
+        req.signal?.addEventListener("abort", () => reject(new Error("aborted by signal")));
+      }),
+  ]);
+  setTimeout(() => controller.abort(), 20);
+  const result = await scriptedAgent(client).agent.run("go", { signal: controller.signal });
+  if (result.stopReason !== "aborted" || result.turns !== 1) {
+    throw new Error(`结果: ${JSON.stringify({ stop: result.stopReason, turns: result.turns })}`);
+  }
+});
+
+await checkAsync("同批的多个询问排队一次问一个；always-allow 替后面同名的调用作答", async () => {
+  let inFlight = 0;
+  let maxInFlight = 0;
+  let asked = 0;
+  const askWith = (decision: PermissionDecision) =>
+    new PermissionSystem({
+      defaultMode: "allow",
+      rules: [{ tool: "Bash", mode: "ask" }],
+      prompt: async () => {
+        asked++;
+        maxInFlight = Math.max(maxInFlight, ++inFlight);
+        await new Promise((r) => setTimeout(r, 15));
+        inFlight--;
+        return decision;
+      },
+    });
+  const three = (perm: PermissionSystem) =>
+    Promise.all([1, 2, 3].map((n) => perm.check({ toolName: "Bash", input: { n }, description: `call ${n}` })));
+
+  const once = await three(askWith("allow"));
+  if (!once.every(Boolean) || asked !== 3 || maxInFlight !== 1) {
+    throw new Error(`allow: 问了 ${asked} 次，最多同时 ${maxInFlight} 个`);
+  }
+  asked = 0;
+  maxInFlight = 0;
+  const always = await three(askWith("always-allow"));
+  if (!always.every(Boolean) || asked !== 1) throw new Error(`always-allow 之后还问了 ${asked - 1} 次`);
+});
+
+check("toOpenAIMessages：tool_use/tool_result 对应成 tool_calls/tool 消息", () => {
+  const out = toOpenAIMessages("sys", [
+    { role: "user", content: "hi" },
+    {
+      role: "assistant",
+      content: [
+        { type: "text", text: "checking" },
+        { type: "tool_use", id: "c1", name: "Echo", input: { text: "x" } },
+      ],
+    },
+    { role: "user", content: [{ type: "tool_result", tool_use_id: "c1", content: "x" }] },
+    // 旧版 web server 在这条路径上存的格式：没有 type
+    { role: "user", content: [{ tool_use_id: "c2", content: "y" }] as unknown as Anthropic.ContentBlockParam[] },
+    { role: "assistant", content: "done" },
+  ]);
+  const shape = out.map((m) => (m.role === "tool" ? `tool:${m.tool_call_id}` : m.role)).join(",");
+  if (shape !== "system,user,assistant,tool:c1,tool:c2,assistant") throw new Error(`消息序列: ${shape}`);
+  const asked = out[2] as { content: string | null; tool_calls?: Array<{ id: string; function: { arguments: string } }> };
+  if (asked.content !== "checking" || asked.tool_calls?.[0]?.id !== "c1") throw new Error("assistant 的 tool_calls 不对");
+  if (asked.tool_calls[0].function.arguments !== '{"text":"x"}') throw new Error("参数没序列化成 JSON");
 });
 
 // ─────────────────────────────────────────────

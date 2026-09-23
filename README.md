@@ -10,7 +10,7 @@ read in an afternoon.
 
 ```
    CLI (REPL)  ─┐
-   Web UI      ─┼─►  Agent  ─►  Claude API
+   Web UI      ─┼─►  Agent  ─►  ModelClient  ─►  Claude API, or any OpenAI-compatible API
    Library     ─┘      │
                        ├─ ModelRouter    optional — picks the tier before turn one
                        ├─ ToolRegistry   Bash · Read · Write · Edit · Glob · Grep · WebFetch
@@ -134,11 +134,20 @@ In the REPL: `/help` `/tools` `/cost` `/sessions` `/resume <id>` `/new` `/model 
 
 ## How it works
 
-**The loop** (`src/agent.ts`) sends a prompt, executes any `tool_use` blocks Claude
-returns, feeds the results back, and repeats until `end_turn` or `maxTurns`. Tool calls
-in one response run concurrently, capped by `AGENT_MAX_CONCURRENT_TOOLS`. Streaming and
-non-streaming share the same path; consumers subscribe with `agent.on(event => …)` and
-get `text_delta`, `tool_start`, `tool_end`, `turn_start`, `turn_end`, `done`.
+**The loop** (`src/agent.ts`) sends a prompt, executes any `tool_use` blocks the model
+returns, feeds the results back, and repeats until the model stops asking for tools or
+`maxTurns` runs out. Tool calls in one response run concurrently, capped by
+`AGENT_MAX_CONCURRENT_TOOLS`; their permission prompts queue, so the user is asked one
+thing at a time. `run(prompt, { signal })` can be aborted, and saves the session up to
+that point. Consumers subscribe with `agent.on(event => …)` and get `session`,
+`tool_request` → `tool_denied` or `tool_start` → `tool_end` (all keyed by the call's
+id), `turn_start`, `turn_end` and `done`, plus `text_delta` / `thinking_delta` when
+`stream: true`.
+
+**The model** (`src/model/`) is behind a `ModelClient`: `AnthropicClient` by default,
+`OpenAICompatibleClient` for any Chat Completions endpoint, or a scripted one in tests.
+History stays Anthropic-shaped throughout, and a client for another API converts at its
+own edge, so the loop never branches on provider.
 
 **Tools** (`src/tools/`) subclass `Tool<T>`, declaring a JSON Schema and a `summarize()`
 used for permission prompts. `ToolRegistry` resolves the per-run set from `allowedTools`
@@ -335,7 +344,7 @@ moved from 0.5 to 0.2.
 ## Development
 
 ```bash
-npm test               # 45 assertions, mocked — no API key needed
+npm test               # 53 assertions, mocked — no API key needed
 npm run eval:risk-gate # measure the gate on the dev set — no API key needed
 npm run eval:risk-gate -- --cases test3  # a held-out set; read its docstring first
 npm run eval:routing   # measure the model router — needs a judge
@@ -365,7 +374,9 @@ npm run cli -- --model their-model-id
 ### Status
 
 The tool layer, permission rules, session round-trips and cost maths are covered by the
-mock suite and run on every change. So is the decision layer's own logic: that the gate
+mock suite and run on every change, and so is the agent loop itself, driven by a
+scripted model: a tool round-trip, the turn limit, a tool that throws, a denied call,
+cancellation between turns and mid-call, and prompts from one batch queueing. So is the decision layer's own logic: that the gate
 cannot touch a static `deny`, and the four ways each of the gate and the router can fail — a backend
 that throws, times out, skips a question, or answers with something that is not a
 probability in [0, 1]. Those eight assertions are the ones worth having, because they

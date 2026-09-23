@@ -1,5 +1,7 @@
-import Anthropic from "@anthropic-ai/sdk";
+import type Anthropic from "@anthropic-ai/sdk";
 import chalk from "chalk";
+import { AnthropicClient } from "./model/anthropic.js";
+import type { ModelClient, ModelDelta, ModelResponse } from "./model/types.js";
 import { PermissionSystem } from "./permissions/index.js";
 import { SessionManager } from "./session/manager.js";
 import type { Tool } from "./tools/base.js";
@@ -13,8 +15,10 @@ import type {
   AgentResult,
   AgentUsage,
   ConversationMessage,
+  RunOptions,
   ToolCallRecord,
   ToolContext,
+  ToolResult,
 } from "./types.js";
 import { estimateCost } from "./utils/cost.js";
 import { logger } from "./utils/logger.js";
@@ -34,10 +38,10 @@ If a task requires multiple steps, plan them out before executing.`;
 /**
  * The core Agent class.
  *
- * Wraps Claude's API in an agentic loop:
+ * Wraps a model API in an agentic loop:
  * 1. Send user prompt
- * 2. If Claude calls tools → execute them → feed results back
- * 3. Repeat until Claude returns end_turn or max turns reached
+ * 2. If the model calls tools → execute them → feed results back
+ * 3. Repeat until the model stops asking for tools or max turns is reached
  *
  * @example
  * ```ts
@@ -47,13 +51,14 @@ If a task requires multiple steps, plan them out before executing.`;
  * ```
  */
 export class Agent {
-  private client: Anthropic;
+  private client: ModelClient;
   /**
-   * Everything with a default. `router` is deliberately not in here: it has
-   * no sensible sentinel the way "" serves for resumeSessionId, and
-   * Required<> under exactOptionalPropertyTypes cannot hold an absent value.
+   * Everything with a default. `router` and `client` are deliberately not in
+   * here: neither has a sensible sentinel the way "" serves for
+   * resumeSessionId, and Required<> under exactOptionalPropertyTypes cannot
+   * hold an absent value.
    */
-  private config: Required<Omit<AgentConfig, "router">>;
+  private config: Required<Omit<AgentConfig, "router" | "client">>;
   private registry: ToolRegistry;
   private permissions: PermissionSystem;
   private sessions: SessionManager;
@@ -61,9 +66,7 @@ export class Agent {
   private router: ModelRouter | undefined;
 
   constructor(config: AgentConfig = {}, registry?: ToolRegistry) {
-    this.client = new Anthropic({
-      apiKey: process.env.ANTHROPIC_API_KEY,
-    });
+    this.client = config.client ?? new AnthropicClient();
 
     this.config = {
       model: config.model ?? (process.env.AGENT_MODEL as AgentConfig["model"]) ?? DEFAULT_MODEL,
@@ -84,9 +87,6 @@ export class Agent {
       stream: config.stream ?? false,
     };
 
-    // Kept off `config` because Required<AgentConfig> cannot hold an absent
-    // value under exactOptionalPropertyTypes, and there is no sensible
-    // sentinel for "no router" the way "" serves for resumeSessionId.
     this.router = config.router;
 
     this.registry = registry ?? globalRegistry;
@@ -110,9 +110,15 @@ export class Agent {
    * Run the agent with a prompt.
    * Executes the full agentic loop and returns when done.
    */
-  async run(prompt: string): Promise<AgentResult> {
+  async run(prompt: string, options: RunOptions = {}): Promise<AgentResult> {
+    const { signal } = options;
     const tools = this.resolveTools();
     const session = await this.initSession();
+    await this.emit({
+      type: "session",
+      sessionId: session.metadata.sessionId,
+      resumed: session.messages.length > 0,
+    });
     await this.route(prompt);
 
     const messages: ConversationMessage[] = [...session.messages];
@@ -129,22 +135,42 @@ export class Agent {
 
     let turn = 0;
     let finalText = "";
-    let finalStopReason = "end_turn";
+    // Only a `break` below overwrites this. Leaving the loop through its own
+    // condition means the last turn still asked for tools, so the limit —
+    // not the model — ended the run. Checking `turn >= maxTurns` afterwards
+    // instead would also flag a run that finished cleanly on its last turn.
+    let finalStopReason = "max_turns";
 
     while (turn < this.config.maxTurns) {
+      if (signal?.aborted) {
+        finalStopReason = "aborted";
+        break;
+      }
       turn++;
       await this.emit({ type: "turn_start", turn });
 
-      // Build API params
-      const apiMessages = this.buildApiMessages(messages);
-      const systemPrompt = this.buildSystemPrompt();
-
-      let response: Anthropic.Message;
-
-      if (this.config.stream) {
-        response = await this.callApiStreaming(apiMessages, systemPrompt, tools);
-      } else {
-        response = await this.callApi(apiMessages, systemPrompt, tools);
+      let response: ModelResponse;
+      try {
+        response = await this.client.create(
+          {
+            model: this.config.model,
+            system: this.buildSystemPrompt(),
+            messages: this.buildApiMessages(messages),
+            tools,
+            maxTokens: this.config.maxTokens,
+            thinking: this.config.thinking,
+            enableCaching: this.config.enableCaching,
+            stream: this.config.stream,
+            signal,
+          },
+          (delta) => this.emitDelta(delta),
+        );
+      } catch (err) {
+        if (signal?.aborted) {
+          finalStopReason = "aborted";
+          break;
+        }
+        throw err;
       }
 
       // Accumulate usage
@@ -154,43 +180,40 @@ export class Agent {
       // Append assistant message to history
       messages.push({ role: "assistant", content: response.content });
 
-      finalStopReason = response.stop_reason ?? "end_turn";
+      const toolUseBlocks = response.content.filter(
+        (b): b is Anthropic.ToolUseBlockParam => b.type === "tool_use",
+      );
 
-      // If no tool calls, we're done
-      if (response.stop_reason === "end_turn") {
-        finalText = this.extractText(response.content);
-        break;
-      }
-
-      // Handle tool_use
-      if (response.stop_reason === "tool_use") {
-        const toolUseBlocks = response.content.filter(
-          (b): b is Anthropic.ToolUseBlock => b.type === "tool_use",
+      if (response.stopReason === "tool_use" && toolUseBlocks.length > 0) {
+        const toolResults = await this.executeTools(
+          toolUseBlocks,
+          toolCalls,
+          {
+            cwd: this.config.cwd,
+            sessionId: session.metadata.sessionId,
+            agentId: "main",
+            permissions: this.permissions.getContext(),
+          },
+          signal,
         );
-
-        const toolResults = await this.executeTools(toolUseBlocks, toolCalls, {
-          cwd: this.config.cwd,
-          sessionId: session.metadata.sessionId,
-          agentId: "main",
-          permissions: this.permissions.getContext(),
-        });
 
         // Append tool results as user message
         messages.push({ role: "user", content: toolResults });
         continue;
       }
 
-      // Any other stop reason
+      // end_turn, or any other stop reason
+      finalStopReason = response.stopReason;
       finalText = this.extractText(response.content);
       break;
     }
 
-    if (turn >= this.config.maxTurns) {
+    if (finalStopReason === "max_turns") {
       logger.warn(`Max turns (${this.config.maxTurns}) reached`);
-      finalStopReason = "max_turns";
     }
 
-    // Persist session
+    // Persist session. Also after an abort: every assistant tool_use already
+    // has its tool_result by now, so the transcript is valid to resume from.
     if (this.config.persistSessions) {
       const updatedSession = this.sessions.appendMessages(
         session,
@@ -240,8 +263,7 @@ export class Agent {
       }
     });
 
-    const config = { ...this.config, stream: true };
-    this.config = config as Required<AgentConfig>;
+    this.config = { ...this.config, stream: true };
     return this.run(prompt);
   }
 
@@ -249,74 +271,11 @@ export class Agent {
   // Private helpers
   // ─────────────────────────────────────────────
 
-  private async callApi(
-    messages: Anthropic.MessageParam[],
-    system: string,
-    tools: Tool[],
-  ): Promise<Anthropic.Message> {
-    const anthropicTools = tools.map((t) => t.toAnthropicTool());
-
-    const params: Anthropic.MessageCreateParamsNonStreaming = {
-      model: this.config.model,
-      max_tokens: this.config.maxTokens,
-      system: this.config.enableCaching
-        ? [{ type: "text", text: system, cache_control: { type: "ephemeral" } }]
-        : system,
-      messages,
-      thinking: this.config.thinking as Anthropic.ThinkingConfigParam,
-      ...(anthropicTools.length > 0 && {
-        tools: anthropicTools,
-        tool_choice: { type: "auto" } as Anthropic.ToolChoiceAuto,
-      }),
-    };
-
-    return this.client.messages.create(params);
-  }
-
-  private async callApiStreaming(
-    messages: Anthropic.MessageParam[],
-    system: string,
-    tools: Tool[],
-  ): Promise<Anthropic.Message> {
-    const anthropicTools = tools.map((t) => t.toAnthropicTool());
-
-    const params: Anthropic.MessageCreateParamsStreaming = {
-      model: this.config.model,
-      max_tokens: this.config.maxTokens,
-      system: this.config.enableCaching
-        ? [{ type: "text", text: system, cache_control: { type: "ephemeral" } }]
-        : system,
-      messages,
-      thinking: this.config.thinking as Anthropic.ThinkingConfigParam,
-      ...(anthropicTools.length > 0 && {
-        tools: anthropicTools,
-        tool_choice: { type: "auto" } as Anthropic.ToolChoiceAuto,
-      }),
-      stream: true,
-    };
-
-    let finalMessage: Anthropic.Message | null = null;
-
-    const stream = this.client.messages.stream(params);
-
-    for await (const event of stream) {
-      if (event.type === "content_block_delta") {
-        if (event.delta.type === "text_delta") {
-          await this.emit({ type: "text_delta", delta: event.delta.text });
-        } else if (event.delta.type === "thinking_delta") {
-          await this.emit({ type: "thinking_delta", delta: event.delta.thinking });
-        }
-      }
-    }
-
-    finalMessage = await stream.finalMessage();
-    return finalMessage;
-  }
-
   private async executeTools(
-    toolUseBlocks: Anthropic.ToolUseBlock[],
+    toolUseBlocks: Anthropic.ToolUseBlockParam[],
     toolCallRecords: ToolCallRecord[],
     context: ToolContext,
+    signal: AbortSignal | undefined,
   ): Promise<Anthropic.ToolResultBlockParam[]> {
     const results: Anthropic.ToolResultBlockParam[] = [];
 
@@ -326,67 +285,78 @@ export class Agent {
 
     for (const batch of batches) {
       const batchResults = await Promise.all(
-        batch.map(async (block) => {
-          const tool = this.registry.get(block.name);
-
-          if (!tool) {
-            logger.warn(`Unknown tool: ${block.name}`);
-            return {
-              type: "tool_result" as const,
-              tool_use_id: block.id,
-              content: `Error: Tool "${block.name}" is not registered.`,
-              is_error: true,
-            };
-          }
-
-          const input = block.input as Record<string, unknown>;
-
-          // Permission check
-          const allowed = await this.permissions.check({
-            toolName: tool.name,
-            input,
-            description: tool.summarize(input),
-          });
-
-          if (!allowed) {
-            return {
-              type: "tool_result" as const,
-              tool_use_id: block.id,
-              content: `Permission denied for tool: ${tool.name}`,
-              is_error: true,
-            };
-          }
-
-          await this.emit({ type: "tool_start", toolName: tool.name, input });
-
-          const start = Date.now();
-          const toolResult = await tool.execute(input, context);
-          const durationMs = Date.now() - start;
-
-          toolCallRecords.push({ toolName: tool.name, input, result: toolResult, durationMs });
-          await this.emit({
-            type: "tool_end",
-            toolName: tool.name,
-            result: toolResult,
-            durationMs,
-          });
-
-          const content =
-            toolResult.type === "success" ? toolResult.output : `Error: ${toolResult.message}`;
-
-          return {
-            type: "tool_result" as const,
-            tool_use_id: block.id,
-            content,
-            is_error: toolResult.type === "error",
-          };
-        }),
+        batch.map((block) => this.executeTool(block, toolCallRecords, context, signal)),
       );
-
       results.push(...batchResults);
     }
 
     return results;
+  }
+
+  /**
+   * One tool call, start to finish. Never rejects: every way a call can fail
+   * becomes an error result for the model, because a rejection here would
+   * take down the whole batch and lose the turn.
+   */
+  private async executeTool(
+    block: Anthropic.ToolUseBlockParam,
+    toolCallRecords: ToolCallRecord[],
+    context: ToolContext,
+    signal: AbortSignal | undefined,
+  ): Promise<Anthropic.ToolResultBlockParam> {
+    const toolUseId = block.id;
+    const input = block.input as Record<string, unknown>;
+    await this.emit({ type: "tool_request", toolUseId, toolName: block.name, input });
+
+    const refuse = async (reason: string, content: string) => {
+      await this.emit({ type: "tool_denied", toolUseId, toolName: block.name, reason });
+      return { type: "tool_result" as const, tool_use_id: toolUseId, content, is_error: true };
+    };
+
+    const tool = this.registry.get(block.name);
+    if (!tool) {
+      logger.warn(`Unknown tool: ${block.name}`);
+      return refuse("not registered", `Error: Tool "${block.name}" is not registered.`);
+    }
+
+    // Permission check
+    const allowed = await this.permissions.check({
+      toolName: tool.name,
+      input,
+      description: tool.summarize(input),
+      toolUseId,
+    });
+    if (!allowed) {
+      return refuse("permission denied", `Permission denied for tool: ${tool.name}`);
+    }
+    // An approval can take minutes; the run may have been stopped meanwhile.
+    if (signal?.aborted) {
+      return refuse("cancelled", "Cancelled: the run was stopped before this call started.");
+    }
+
+    await this.emit({ type: "tool_start", toolUseId, toolName: tool.name, input });
+
+    const start = Date.now();
+    let toolResult: ToolResult;
+    try {
+      toolResult = await tool.execute(input, context);
+    } catch (err) {
+      toolResult = {
+        type: "error",
+        message: `${tool.name} threw: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+    const durationMs = Date.now() - start;
+
+    toolCallRecords.push({ toolName: tool.name, input, result: toolResult, durationMs });
+    await this.emit({ type: "tool_end", toolUseId, toolName: tool.name, result: toolResult, durationMs });
+
+    return {
+      type: "tool_result",
+      tool_use_id: toolUseId,
+      content: toolResult.type === "success" ? toolResult.output : `Error: ${toolResult.message}`,
+      is_error: toolResult.type === "error",
+    };
   }
 
   /**
@@ -431,45 +401,31 @@ export class Agent {
     }));
   }
 
-  private extractText(content: Anthropic.ContentBlock[]): string {
+  private extractText(content: Anthropic.ContentBlockParam[]): string {
     return content
-      .filter((b): b is Anthropic.TextBlock => b.type === "text")
+      .filter((b): b is Anthropic.TextBlockParam => b.type === "text")
       .map((b) => b.text)
       .join("");
   }
 
-  private accumulateUsage(response: Anthropic.Message, accum: AgentUsage): AgentUsage {
-    const u = response.usage as Anthropic.Usage & {
-      cache_creation_input_tokens?: number;
-      cache_read_input_tokens?: number;
-    };
-
-    const inputTokens = u.input_tokens ?? 0;
-    const outputTokens = u.output_tokens ?? 0;
-    const cacheCreation = u.cache_creation_input_tokens ?? 0;
-    const cacheRead = u.cache_read_input_tokens ?? 0;
+  private accumulateUsage(response: ModelResponse, accum: AgentUsage): AgentUsage {
+    const { inputTokens, outputTokens, cacheCreationTokens, cacheReadTokens } = response.usage;
 
     const cost = estimateCost(
       this.config.model,
       inputTokens,
       outputTokens,
-      cacheCreation,
-      cacheRead,
+      cacheCreationTokens,
+      cacheReadTokens,
     );
 
     accum.inputTokens += inputTokens;
     accum.outputTokens += outputTokens;
-    accum.cacheCreationTokens += cacheCreation;
-    accum.cacheReadTokens += cacheRead;
+    accum.cacheCreationTokens += cacheCreationTokens;
+    accum.cacheReadTokens += cacheReadTokens;
     accum.estimatedCostUsd += cost;
 
-    return {
-      inputTokens,
-      outputTokens,
-      cacheCreationTokens: cacheCreation,
-      cacheReadTokens: cacheRead,
-      estimatedCostUsd: cost,
-    };
+    return { inputTokens, outputTokens, cacheCreationTokens, cacheReadTokens, estimatedCostUsd: cost };
   }
 
   private async initSession() {
@@ -490,6 +446,12 @@ export class Agent {
       totalOutputTokens: 0,
       totalCost: 0,
     });
+  }
+
+  private emitDelta(delta: ModelDelta): Promise<void> {
+    return delta.type === "text"
+      ? this.emit({ type: "text_delta", delta: delta.text })
+      : this.emit({ type: "thinking_delta", delta: delta.thinking });
   }
 
   private async emit(event: AgentEvent): Promise<void> {

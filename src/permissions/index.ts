@@ -18,6 +18,8 @@ export class PermissionSystem {
   private context: PermissionContext;
   private prompt: PermissionPrompt;
   private gate: RiskGate | undefined;
+  /** Tail of the queue of questions to the user — see promptUser(). */
+  private promptQueue: Promise<unknown> = Promise.resolve();
 
   constructor(context?: Partial<PermissionContext>) {
     // `prompt` and `gate` are kept off `this.context` so that getContext() —
@@ -92,7 +94,26 @@ export class PermissionSystem {
     return this.context.defaultMode;
   }
 
-  private async promptUser(request: PermissionRequest): Promise<boolean> {
+  /**
+   * Ask the user, one question at a time.
+   *
+   * The agent runs a batch of tool calls concurrently, but a terminal can
+   * hold one prompt and the browser shows one approval card; two at once
+   * would interleave on stdin or overwrite each other on screen. So prompts
+   * queue. A call that waited in the queue may already have been settled by
+   * the answer ahead of it — "always allow Bash" answers the next Bash too —
+   * so the rules are read again before it is asked.
+   */
+  private promptUser(request: PermissionRequest): Promise<boolean> {
+    const answer = this.promptQueue.then(() => this.promptNow(request));
+    this.promptQueue = answer.catch(() => undefined);
+    return answer;
+  }
+
+  private async promptNow(request: PermissionRequest): Promise<boolean> {
+    const settled = this.resolveMode(request.toolName);
+    if (settled !== "ask") return settled === "allow";
+
     const decision = await this.prompt(request);
 
     switch (decision) {
