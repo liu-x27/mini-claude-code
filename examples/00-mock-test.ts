@@ -33,6 +33,7 @@ import { Tool } from "../src/tools/base.js";
 import { toOpenAIMessages } from "../src/model/openai.js";
 import type { ModelClient, ModelRequest, ModelResponse } from "../src/model/types.js";
 import type Anthropic from "@anthropic-ai/sdk";
+import { renderMarkdown } from "../client/src/lib/markdown.js";
 import * as os from "node:os";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
@@ -804,6 +805,31 @@ check("toOpenAIMessages：tool_use/tool_result 对应成 tool_calls/tool 消息"
   const asked = out[2] as { content: string | null; tool_calls?: Array<{ id: string; function: { arguments: string } }> };
   if (asked.content !== "checking" || asked.tool_calls?.[0]?.id !== "c1") throw new Error("assistant 的 tool_calls 不对");
   if (asked.tool_calls[0].function.arguments !== '{"text":"x"}') throw new Error("参数没序列化成 JSON");
+});
+
+// ─────────────────────────────────────────────
+// 8. Web client
+// ─────────────────────────────────────────────
+section("8. Web client");
+
+check("renderMarkdown：模型输出里的 HTML 一律转义，不会变成标签", () => {
+  // 回复可以被工具取回的网页内容带偏；这个页面能 POST /api/permission
+  const html = renderMarkdown(
+    'Done. <img src=x onerror="fetch(\'/api/permission\')"> and `<b>code</b>` and [x](javascript:alert(1))',
+  );
+  if (/<img|<b>|onerror="/.test(html)) throw new Error(`原样放进了 HTML：${html}`);
+  if (html.includes('href="javascript:')) throw new Error("javascript: 链接没有被挡住");
+  if (!html.includes("&lt;img") || !html.includes("<code>&lt;b&gt;code&lt;/b&gt;</code>")) {
+    throw new Error(`转义结果不对：${html}`);
+  }
+});
+
+check("renderMarkdown：该有的格式照样有", () => {
+  const html = renderMarkdown("# Title\n\n**bold** and *it*\n\n- one\n- two\n\n```ts\nconst a = 1 < 2;\n```");
+  for (const want of ["<h2>Title</h2>", "<strong>bold</strong>", "<em>it</em>", "<ul><li>one</li><li>two</li></ul>",
+    '<pre class="md-pre" data-lang="ts"><code>const a = 1 &lt; 2;</code></pre>']) {
+    if (!html.includes(want)) throw new Error(`缺少 ${want}：${html}`);
+  }
 });
 
 // ─────────────────────────────────────────────

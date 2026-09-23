@@ -1,27 +1,7 @@
 import { useState } from "react";
 import { ToolCallCard } from "./ToolCallCard";
 import type { Message } from "../hooks/useChat";
-
-function renderMarkdown(text: string): string {
-  return text
-    .replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) =>
-      `<pre class="md pre" data-lang="${lang}"><code>${escHtml(code.trimEnd())}</code></pre>`
-    )
-    .replace(/`([^`]+)`/g, '<code class="md code">$1</code>')
-    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
-    .replace(/\*(.+?)\*/g, "<em>$1</em>")
-    .replace(/^### (.+)$/gm, "<h3>$1</h3>")
-    .replace(/^## (.+)$/gm, "<h2>$1</h2>")
-    .replace(/^# (.+)$/gm, "<h1>$1</h1>")
-    .replace(/^- (.+)$/gm, "<li>$1</li>")
-    .replace(/(<li>[\s\S]*?<\/li>)/g, "<ul>$1</ul>")
-    .replace(/\n\n/g, "</p><p>")
-    .replace(/^(.+)$(?!\n)/gm, (m) => (m.startsWith("<") ? m : `<p>${m}</p>`));
-}
-
-function escHtml(s: string) {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-}
+import { renderMarkdown } from "../lib/markdown";
 
 export function MessageBubble({ msg, modelLabel }: { msg: Message; modelLabel?: string }) {
   const [showThinking, setShowThinking] = useState(false);
