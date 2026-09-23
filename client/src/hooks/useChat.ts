@@ -10,6 +10,10 @@ export interface GateVerdict {
   probability?: number | undefined;
   reason: string;
   judge: string;
+  /** Every risk question's probability, in the order asked. */
+  answers?: Array<{ id: string; probability: number }> | undefined;
+  latencyMs?: number | undefined;
+  threshold?: number | undefined;
 }
 
 export interface ToolCall {
@@ -174,6 +178,9 @@ export function useChat(
                     probability: data["probability"] as number | undefined,
                     reason: data["reason"] as string,
                     judge: data["judge"] as string,
+                    answers: data["answers"] as GateVerdict["answers"],
+                    latencyMs: data["latencyMs"] as number | undefined,
+                    threshold: data["threshold"] as number | undefined,
                   };
                   last.toolCalls = (last.toolCalls ?? []).map((tc) =>
                     tc.id === (data["id"] as string) ? { ...tc, gate: verdict } : tc,

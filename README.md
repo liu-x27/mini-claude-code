@@ -357,7 +357,7 @@ moved from 0.5 to 0.2.
 ## Development
 
 ```bash
-npm test               # 53 assertions, mocked — no API key needed
+npm test               # 56 assertions, mocked — no API key needed
 npm run eval:risk-gate # measure the gate on the dev set — no API key needed
 npm run eval:risk-gate -- --cases test3  # a held-out set; read its docstring first
 npm run eval:routing   # measure the model router — needs a judge

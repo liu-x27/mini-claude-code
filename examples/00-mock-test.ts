@@ -281,6 +281,26 @@ function recordingPrompt() {
   return record;
 }
 
+await checkAsync("判断结果带上每道题的概率、耗时和阈值，按提问顺序；失败时不带答案", async () => {
+  const scores: Record<string, number> = { "destroys-data": 0.9, "outside-cwd": 0.3, exfiltrates: 0.05, "reveals-secret": 0.01 };
+  const gate = createRiskGate({
+    backend: {
+      name: "scored",
+      // 故意倒序回答：结果必须按提问顺序排好，而不是照抄后端的顺序
+      noul: async (_s: JudgeState, qs: NoulQuestion[]) => [...qs].reverse().map((q) => ({ id: q.id, probability: scores[q.id]! })),
+    },
+  });
+  const v = await gate({ toolName: "Bash", input: { command: "rm -rf dist" }, description: "rm -rf dist" });
+  const ids = v.answers?.map((a) => a.id).join(",");
+  if (ids !== RISK_QUESTIONS.map((q) => q.id).join(",")) throw new Error(`答案顺序: ${ids}`);
+  if (v.probability !== 0.9 || v.action !== "ask") throw new Error(`按最坏一题决定: ${JSON.stringify(v)}`);
+  if (v.threshold !== 0.2 || typeof v.latencyMs !== "number") throw new Error(`阈值/耗时: ${v.threshold} ${v.latencyMs}`);
+
+  const broken = createRiskGate({ backend: { name: "broken", noul: async () => [] } });
+  const b = await broken({ toolName: "Bash", input: { command: "ls" }, description: "ls" });
+  if (b.action !== "ask" || b.answers !== undefined) throw new Error(`失败时: ${JSON.stringify(b)}`);
+});
+
 await checkAsync("静态规则 allow 时不询问判断层", async () => {
   const judge = fakeJudge(0.99);
   const perm = new PermissionSystem({

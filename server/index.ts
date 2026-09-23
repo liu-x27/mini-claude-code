@@ -268,6 +268,9 @@ app.post("/api/chat", async (req, res) => {
                 probability: verdict.probability,
                 reason: verdict.reason,
                 judge: gateLabel,
+                answers: verdict.answers,
+                latencyMs: verdict.latencyMs,
+                threshold: verdict.threshold,
               });
               return verdict;
             },

@@ -124,6 +124,17 @@ export interface GateVerdict {
   probability: number | undefined;
   /** Short explanation, for logs and eval output. */
   reason: string;
+  /**
+   * Every question's answer, in the order they were asked, when the backend
+   * gave a complete and valid set. The decision is made on the worst of
+   * them; the rest are there so a UI can show which harm held a call and
+   * which ones were never in doubt.
+   */
+  answers?: Array<{ id: string; probability: number }> | undefined;
+  /** How long the backend took to answer, in milliseconds. */
+  latencyMs?: number | undefined;
+  /** The auto-allow threshold the verdict was made against. */
+  threshold?: number | undefined;
 }
 
 /**
