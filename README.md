@@ -451,6 +451,33 @@ agrees with the rule on every sampled tick. The threshold is 0.6 rather than 0.5
 the judge answers 0.486 for "it stays in the gap": right, by a margin a quantisation
 change could erase.
 
+### How many a second, and what waiting costs
+
+Each game asks one question at a time and the gate four at once. `npm run
+eval:throughput` asks what one local judge does beyond that: *c* callers, each sending
+its next snake question the moment the last returns, 96 questions per level, on an RTX
+5080.
+
+![Decisions per second and p95 latency against callers asking at once](docs/throughput.svg)
+
+| callers at once | 1 | 2 | 4 | 8 | 16 |
+|---|---|---|---|---|---|
+| Ollama as installed, decisions/s | 33.5 | 41.3 | 41.7 | 41.5 | 41.0 |
+| `OLLAMA_NUM_PARALLEL=4`, decisions/s | 37.4 | 37.5 | 38.4 | 39.7 | 41.5 |
+| p95 as installed, ms (the other within 15 ms) | 43 | 72 | 128 | 240 | 463 |
+
+About forty decisions a second is the ceiling, and four parallel slots do not move it:
+past one or two callers, each extra caller only adds a place in the queue, and p95
+grows in step with the queue. The ×1.2 from one caller to two in the default setup is
+the next request's HTTP overlapping the current one's compute, not parallel inference.
+
+What the numbers are consistent with — not something I profiled — is that the time
+goes into reading the prompt, not writing the answer. A decision is one output token,
+so there is no stretch of token-by-token generation for batching to share, which is
+where parallel slots usually pay. The same judge answers Flappy's one-line question in
+15 ms at the median against the snake's 30, which points the same way: for a decision
+layer the lever is a shorter question, or a smaller model, not more concurrency.
+
 ## Development
 
 ```bash
