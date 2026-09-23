@@ -20,8 +20,8 @@
  *   CAPTURE_BASE_URL=http://127.0.0.1:11434 CAPTURE_PROVIDER=anthropic \
  *   CAPTURE_MODEL=llama3.1:8b CAPTURE_API_KEY=ollama  path/to/electron.exe docs/capture-screenshots.mjs
  *
- * Pages are shot in the product theme, plus one of the approval in the
- * terminal theme.
+ * Both moments are shot in the Instrument theme, wide enough to show its
+ * decision rail, and the approval again in Editorial and in Aurora.
  */
 import { app, BrowserWindow } from "electron";
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -30,6 +30,17 @@ const URL = "http://localhost:5174";
 const OUT = "D:/CODE/agent-app/docs";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** Cycle the theme button until the page is in `theme`. */
+async function switchTheme(win, theme) {
+  for (let i = 0; i < 3; i++) {
+    const now = await win.webContents.executeJavaScript(`document.documentElement.dataset.theme`);
+    if (now === theme) return;
+    await win.webContents.executeJavaScript(`document.querySelector('[aria-label^="Switch to"]').click(); true;`);
+    await sleep(300);
+  }
+  throw new Error(`could not switch to the ${theme} theme`);
+}
 
 async function poll(win, expression, timeoutMs, label) {
   const deadline = Date.now() + timeoutMs;
@@ -65,18 +76,19 @@ async function typeAndSend(win, text) {
   `);
 }
 
-async function shoot(win, name) {
+/** PNG, except where a gradient and grain would make one ten times the size. */
+async function shoot(win, name, format = "png") {
   const image = await win.webContents.capturePage();
-  writeFileSync(`${OUT}/${name}.png`, image.toPNG());
-  console.log(`  wrote docs/${name}.png`);
+  writeFileSync(`${OUT}/${name}.${format}`, format === "jpg" ? image.toJPEG(88) : image.toPNG());
+  console.log(`  wrote docs/${name}.${format}`);
 }
 
 app.whenReady().then(async () => {
   mkdirSync(OUT, { recursive: true });
 
   const win = new BrowserWindow({
-    width: 1180,
-    height: 820,
+    width: 1440,
+    height: 900,
     show: true,
     webPreferences: { backgroundThrottling: false },
   });
@@ -90,7 +102,7 @@ app.whenReady().then(async () => {
     model: process.env.CAPTURE_MODEL ?? "MiniMax-M2",
     apiKey: process.env.CAPTURE_API_KEY ?? "",
     // fixed, so the images do not depend on the OS light/dark setting
-    theme: "product",
+    theme: "instrument",
   };
   await win.webContents.executeJavaScript(`
     for (const [k, v] of Object.entries(${JSON.stringify(seed)})) {
@@ -105,7 +117,8 @@ app.whenReady().then(async () => {
   console.log("shot 1: auto-approved");
   await typeAndSend(win, "Run exactly this shell command and report the number: wc -l src/agent.ts");
   await poll(win, `!!document.querySelector(".gate-auto")`, 90_000, "an auto-approved badge");
-  await sleep(2500);
+  await poll(win, `!document.querySelector(".composer[data-busy]")`, 90_000, "the reply to finish");
+  await sleep(1000);
   await shoot(win, "gate-auto-approved");
 
   // ── 2. A destructive command: the gate defers to the user ──
@@ -119,17 +132,17 @@ app.whenReady().then(async () => {
   await sleep(600);
   await shoot(win, "gate-needs-approval");
 
-  // ── 3. The same moment in the terminal theme ──
-  console.log("shot 3: terminal theme");
-  await win.webContents.executeJavaScript(
-    `document.querySelector('[aria-label="Switch to Terminal theme"]').click(); true;`,
-  );
-  await sleep(700);
-  await win.webContents.executeJavaScript(
-    `document.querySelector(".approval").scrollIntoView({block:"center"}); true;`,
-  );
-  await sleep(500);
-  await shoot(win, "terminal-theme");
+  // ── 3 and 4. The same moment in the other two themes ──
+  for (const theme of ["editorial", "aurora"]) {
+    console.log(`shot: ${theme} theme`);
+    await switchTheme(win, theme);
+    await sleep(700);
+    await win.webContents.executeJavaScript(
+      `document.querySelector(".approval").scrollIntoView({block:"end"}); true;`,
+    );
+    await sleep(600);
+    await shoot(win, `theme-${theme}`, theme === "aurora" ? "jpg" : "png");
+  }
 
   // Deny it so the run does not actually delete anything, then stop.
   await win.webContents.executeJavaScript(`

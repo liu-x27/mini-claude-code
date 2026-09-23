@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import type { PendingApproval } from "../hooks/useChat";
+import { AnswerRows, DEFAULT_THRESHOLD, fmtP, Ring, whyHeld, worst } from "./Answers";
 import { Icon } from "./Icon";
 
 /**
@@ -7,16 +8,18 @@ import { Icon } from "./Icon";
  *
  * Deliberately shows the command as the thing being decided, not the tool
  * name: "Bash" is not a decision anyone can make, and `rm -rf dist` is. The
- * gate's own reasoning goes underneath, because the useful version of this
- * prompt tells you *why* it reached you — a call deferred at 0.21 deserves a
- * different glance from one deferred at 0.99.
+ * gate's own numbers go with it, because the useful version of this prompt
+ * tells you *why* it reached you — a call held at 0.21 deserves a different
+ * glance from one held at 0.998.
  */
 export function ApprovalCard({
   approval,
   onRespond,
+  refNo,
 }: {
   approval: PendingApproval;
   onRespond: (id: string, decision: "allow" | "deny" | "always-allow") => void;
+  refNo?: number | undefined;
 }) {
   const allowRef = useRef<HTMLButtonElement>(null);
 
@@ -38,26 +41,34 @@ export function ApprovalCard({
         ? (approval.input["file_path"] as string)
         : approval.description;
 
-  const p = approval.gate?.probability;
+  const gate = approval.gate;
+  const top = worst(gate);
+  const threshold = gate?.threshold ?? DEFAULT_THRESHOLD;
 
   return (
-    <div className="approval" role="alertdialog" aria-label="Tool call needs approval">
-      <div className="approval-top">
-        <Icon name="shield" size={15} className="approval-icon" />
-        <span className="approval-chip">Needs your approval</span>
+    <div className="approval" data-tool={approval.toolName} role="alertdialog" aria-label="Tool call needs approval">
+      <div className="approval-head">
+        <Icon name="shield" size={16} className="approval-icon" />
+        <span className="approval-kicker">
+          Held for your decision
+          {refNo !== undefined && <sup>{refNo}</sup>}
+        </span>
         <span className="approval-tool">{approval.toolName}</span>
       </div>
 
-      <pre className="approval-cmd">{command}</pre>
-
-      {approval.gate && (
-        <div className="approval-why">
-          <span className="approval-why-label">{approval.gate.judge}</span>
-          {p === undefined
-            ? " could not produce a probability, so this came to you"
-            : ` scored this ${p.toFixed(3)} — above the auto-approve threshold`}
+      <div className="approval-body">
+        <Ring p={gate?.probability} threshold={threshold} size="lg" />
+        <div className="approval-main">
+          <pre className="approval-cmd">{command}</pre>
+          <p className="approval-why">{whyHeld(gate)}</p>
         </div>
-      )}
+        <div className="approval-score">
+          <span className="approval-number">{fmtP(gate?.probability)}</span>
+          {top && <span className="approval-unit">P({top.id})</span>}
+        </div>
+      </div>
+
+      {gate && <AnswerRows gate={gate} />}
 
       <div className="approval-actions">
         <button
@@ -79,6 +90,12 @@ export function ApprovalCard({
           Deny <kbd>Esc</kbd>
         </button>
       </div>
+      {gate && (
+        <p className="approval-judge">
+          {gate.judge}
+          {gate.latencyMs !== undefined && ` · ${gate.latencyMs} ms`} · auto-allow below {threshold.toFixed(2)}
+        </p>
+      )}
     </div>
   );
 }

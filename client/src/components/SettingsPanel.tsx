@@ -72,18 +72,21 @@ export function SettingsPanel({
         <div className="drawer-body">
           <section className="group">
             <h3 className="eyebrow">Appearance</h3>
-            <div className="segmented" role="radiogroup" aria-label="Theme">
+            <div className="theme-picker" role="radiogroup" aria-label="Theme">
               {THEMES.map((t) => (
                 <button
                   key={t.value}
                   type="button"
                   role="radio"
                   aria-checked={theme === t.value}
-                  className="segment"
+                  className="theme-option"
                   onClick={() => onTheme(t.value)}
                 >
-                  <span className="segment-label">{t.label}</span>
-                  <span className="segment-hint">{t.hint}</span>
+                  <span className="theme-swatch" data-swatch={t.value} aria-hidden="true" />
+                  <span className="theme-text">
+                    <span className="theme-label">{t.label}</span>
+                    <span className="theme-hint">{t.hint}</span>
+                  </span>
                 </button>
               ))}
             </div>
@@ -170,12 +173,12 @@ export function SettingsPanel({
 
           <section className="group">
             <h3 className="eyebrow">Tools</h3>
-            <div className="chips">
+            <div className="toggles">
               {tools.map((t) => (
                 <button
                   key={t}
                   type="button"
-                  className="chip"
+                  className="toggle"
                   aria-pressed={enabledTools.includes(t)}
                   onClick={() => onToggleTool(t)}
                 >

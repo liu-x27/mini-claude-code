@@ -111,6 +111,7 @@ app.get("/api/health", (_req, res) => {
     status: "ok",
     hasApiKey: !!process.env["ANTHROPIC_API_KEY"],
     tools: globalRegistry.names(),
+    judge: gate ? gateLabel : null,
   });
 });
 

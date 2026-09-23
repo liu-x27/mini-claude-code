@@ -18,9 +18,8 @@ export const Composer = forwardRef<
     onStop: () => void;
     busy: boolean;
     disabled: boolean;
-    sessionId: string | null;
   }
->(function Composer({ value, onChange, onSend, onStop, busy, disabled, sessionId }, ref) {
+>(function Composer({ value, onChange, onSend, onStop, busy, disabled }, ref) {
   const areaRef = useRef<HTMLTextAreaElement>(null);
   const formRef = useRef<HTMLFormElement>(null);
   useImperativeHandle(ref, () => ({ focus: () => areaRef.current?.focus() }), []);
@@ -60,7 +59,8 @@ export const Composer = forwardRef<
           value={value}
           onChange={(e) => onChange(e.target.value)}
           onKeyDown={onKeyDown}
-          placeholder="Message Agent…"
+          placeholder="Write to the agent…"
+          title="Enter to send, Shift+Enter for a new line"
           rows={1}
           disabled={busy}
           aria-label="Message"
@@ -68,19 +68,15 @@ export const Composer = forwardRef<
         {busy ? (
           <button type="button" className="send is-stop" onClick={onStop} title="Stop" aria-label="Stop">
             <Icon name="stop" size={14} />
+            <span className="send-label">Stop</span>
           </button>
         ) : (
           <button type="submit" className="send" disabled={!canSend} title="Send" aria-label="Send">
             <Icon name="arrowUp" size={15} />
+            <span className="send-label">Send</span>
           </button>
         )}
       </form>
-      <div className="composer-hint">
-        <span>
-          <kbd>Enter</kbd> to send · <kbd>Shift</kbd> <kbd>Enter</kbd> for a new line
-        </span>
-        {sessionId && <span className="composer-session">session {sessionId.slice(0, 8)}</span>}
-      </div>
     </div>
   );
 });

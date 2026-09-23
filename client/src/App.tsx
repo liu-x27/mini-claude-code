@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { ApprovalCard } from "./components/ApprovalCard";
-import { EmptyState, Sidebar, TopBar } from "./components/Chrome";
 import { Composer, type ComposerHandle } from "./components/Composer";
+import { DecisionRail, gatedCalls, medianLatency } from "./components/DecisionRail";
 import { Icon } from "./components/Icon";
-import { Message } from "./components/Message";
+import { FRAMES } from "./components/Layouts";
+import { Sessions } from "./components/Sessions";
 import { type Settings, SettingsPanel } from "./components/SettingsPanel";
+import { EmptyState, Thread } from "./components/Thread";
 import { type Provider, useChat } from "./hooks/useChat";
 import { DEFAULT_TOOLS } from "./lib/providers";
 import { useTheme } from "./lib/theme";
@@ -32,13 +33,14 @@ function saveSettings(s: Settings) {
 }
 
 export default function App() {
-  const [theme, setTheme, toggleTheme] = useTheme();
+  const [theme, setTheme, cycleTheme] = useTheme();
   const [settings, setSettings] = useState<Settings>(loadSettings);
   const [tools, setTools] = useState<string[]>(DEFAULT_TOOLS);
   const [enabledTools, setEnabledTools] = useState<string[]>(DEFAULT_TOOLS);
   const [serverHasKey, setServerHasKey] = useState(false);
+  const [serverJudge, setServerJudge] = useState<string | undefined>();
   const [input, setInput] = useState("");
-  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [sessionsOpen, setSessionsOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
 
   const { state, send, stop, clear, respond } = useChat(
@@ -56,8 +58,9 @@ export default function App() {
   useEffect(() => {
     fetch("/api/health")
       .then((r) => r.json())
-      .then((d: { hasApiKey?: boolean; tools?: string[] }) => {
+      .then((d: { hasApiKey?: boolean; tools?: string[]; judge?: string | null }) => {
         setServerHasKey(!!d.hasApiKey);
+        if (typeof d.judge === "string") setServerJudge(d.judge);
         if (Array.isArray(d.tools) && d.tools.length) {
           setTools(d.tools);
           setEnabledTools(d.tools);
@@ -82,9 +85,13 @@ export default function App() {
     return { tokens, cost };
   }, [state.messages]);
 
+  const calls = useMemo(() => gatedCalls(state.messages), [state.messages]);
+  const judge = serverJudge ?? calls[0]?.gate?.judge;
+
   /* Follow the stream only while the reader is at the bottom: scrolling up
-     to read an earlier tool call should not be undone by the next delta. */
-  const threadRef = useRef<HTMLElement>(null);
+     to read an earlier tool call should not be undone by the next delta.
+     A theme switch mounts a new frame, so it counts as a change too. */
+  const threadRef = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
   const onScroll = useCallback(() => {
     const el = threadRef.current;
@@ -93,7 +100,7 @@ export default function App() {
   useLayoutEffect(() => {
     const el = threadRef.current;
     if (el && pinned.current) el.scrollTop = el.scrollHeight;
-  }, [state.messages, state.pendingApproval]);
+  }, [state.messages, state.pendingApproval, theme]);
 
   const composerRef = useRef<ComposerHandle>(null);
   const handleSend = useCallback(() => {
@@ -110,73 +117,66 @@ export default function App() {
   }, [clear]);
 
   const needsApiKey = !serverHasKey && !settings.apiKey;
+  const Frame = FRAMES[theme];
 
   return (
-    <div className="app" data-sidebar={sidebarOpen ? "open" : "closed"}>
-      <Sidebar open={sidebarOpen} sessionId={state.sessionId} onNewChat={newChat} />
+    <div className="app">
+      <Frame
+        theme={theme}
+        onCycleTheme={cycleTheme}
+        model={settings.model}
+        onModel={(model) => updateSettings({ model })}
+        totals={totals}
+        busy={state.isLoading}
+        sessionId={state.sessionId}
+        judge={judge}
+        medianMs={medianLatency(calls)}
+        turns={state.messages.filter((m) => m.role === "user").length}
+        hasMessages={state.messages.length > 0}
+        onToggleSessions={() => setSessionsOpen((v) => !v)}
+        onOpenSettings={() => setSettingsOpen(true)}
+        onNewChat={newChat}
+        threadRef={threadRef}
+        onScroll={onScroll}
+        notice={
+          needsApiKey && (
+            <div className="notice">
+              <Icon name="key" size={15} />
+              <span>Add an API key to start — or give the server one.</span>
+              <button type="button" className="link" onClick={() => setSettingsOpen(true)}>
+                Open settings
+              </button>
+            </div>
+          )
+        }
+        thread={
+          state.messages.length === 0 ? (
+            <EmptyState
+              tools={tools}
+              onPick={(p) => {
+                setInput(p);
+                composerRef.current?.focus();
+              }}
+            />
+          ) : (
+            <Thread messages={state.messages} modelLabel={settings.model} pending={state.pendingApproval} onRespond={respond} />
+          )
+        }
+        composer={
+          <Composer
+            ref={composerRef}
+            value={input}
+            onChange={setInput}
+            onSend={handleSend}
+            onStop={stop}
+            busy={state.isLoading}
+            disabled={needsApiKey}
+          />
+        }
+        rail={<DecisionRail messages={state.messages} judge={judge} waitingId={state.pendingApproval?.toolUseId} />}
+      />
 
-      <div className="main">
-        <TopBar
-          model={settings.model}
-          onModel={(model) => updateSettings({ model })}
-          theme={theme}
-          onToggleTheme={toggleTheme}
-          onToggleSidebar={() => setSidebarOpen((v) => !v)}
-          onOpenSettings={() => setSettingsOpen(true)}
-          onNewChat={newChat}
-          hasMessages={state.messages.length > 0}
-          totals={totals}
-          busy={state.isLoading}
-        />
-
-        {needsApiKey && (
-          <div className="notice">
-            <Icon name="key" size={15} />
-            <span>Add an API key to start — or give the server one.</span>
-            <button type="button" className="link" onClick={() => setSettingsOpen(true)}>
-              Open settings
-            </button>
-          </div>
-        )}
-
-        <main className="thread" ref={threadRef} onScroll={onScroll}>
-          <div className="thread-inner">
-            {state.messages.length === 0 ? (
-              <EmptyState
-                tools={tools}
-                onPick={(p) => {
-                  setInput(p);
-                  composerRef.current?.focus();
-                }}
-              />
-            ) : (
-              <>
-                {state.messages.map((msg) => (
-                  <Message
-                    key={msg.id}
-                    msg={msg}
-                    modelLabel={settings.model}
-                    waitingToolId={state.pendingApproval?.toolUseId}
-                  />
-                ))}
-                {state.pendingApproval && <ApprovalCard approval={state.pendingApproval} onRespond={respond} />}
-              </>
-            )}
-          </div>
-        </main>
-
-        <Composer
-          ref={composerRef}
-          value={input}
-          onChange={setInput}
-          onSend={handleSend}
-          onStop={stop}
-          busy={state.isLoading}
-          disabled={needsApiKey}
-          sessionId={state.sessionId}
-        />
-      </div>
-
+      <Sessions open={sessionsOpen} onClose={() => setSessionsOpen(false)} sessionId={state.sessionId} onNewChat={newChat} />
       <SettingsPanel
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}
