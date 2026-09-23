@@ -14,8 +14,14 @@
  *   npm run client                       # terminal 2
  *   path/to/electron.exe docs/capture-screenshots.mjs
  *
- * It expects a provider reachable at the baseURL seeded below; edit those two
- * localStorage lines for your own.
+ * The loop's provider is seeded into the UI's settings from the environment,
+ * defaulting to MiniMax's OpenAI-compatible endpoint. For a local Ollama:
+ *
+ *   CAPTURE_BASE_URL=http://127.0.0.1:11434 CAPTURE_PROVIDER=anthropic \
+ *   CAPTURE_MODEL=llama3.1:8b CAPTURE_API_KEY=ollama  path/to/electron.exe docs/capture-screenshots.mjs
+ *
+ * Pages are shot in the product theme, plus one of the approval in the
+ * terminal theme.
  */
 import { app, BrowserWindow } from "electron";
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -78,9 +84,18 @@ app.whenReady().then(async () => {
   // The UI keeps provider settings in localStorage; seed them so the run does
   // not need the settings panel opened by hand.
   await win.loadURL(URL);
+  const seed = {
+    baseURL: process.env.CAPTURE_BASE_URL ?? "https://api.minimaxi.com/v1",
+    provider: process.env.CAPTURE_PROVIDER ?? "openai",
+    model: process.env.CAPTURE_MODEL ?? "MiniMax-M2",
+    apiKey: process.env.CAPTURE_API_KEY ?? "",
+    // fixed, so the images do not depend on the OS light/dark setting
+    theme: "product",
+  };
   await win.webContents.executeJavaScript(`
-    localStorage.setItem("baseURL", "https://api.minimaxi.com/v1");
-    localStorage.setItem("model", "MiniMax-M2");
+    for (const [k, v] of Object.entries(${JSON.stringify(seed)})) {
+      if (v) localStorage.setItem(k, v); else localStorage.removeItem(k);
+    }
     true;
   `);
   await win.loadURL(URL);
@@ -103,6 +118,18 @@ app.whenReady().then(async () => {
   );
   await sleep(600);
   await shoot(win, "gate-needs-approval");
+
+  // ── 3. The same moment in the terminal theme ──
+  console.log("shot 3: terminal theme");
+  await win.webContents.executeJavaScript(
+    `document.querySelector('[aria-label="Switch to Terminal theme"]').click(); true;`,
+  );
+  await sleep(700);
+  await win.webContents.executeJavaScript(
+    `document.querySelector(".approval").scrollIntoView({block:"center"}); true;`,
+  );
+  await sleep(500);
+  await shoot(win, "terminal-theme");
 
   // Deny it so the run does not actually delete anything, then stop.
   await win.webContents.executeJavaScript(`
