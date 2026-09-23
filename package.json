@@ -24,6 +24,7 @@
     "eval:flappy": "npx tsx eval/flappy/run.ts",
     "eval:throughput": "npx tsx eval/throughput/run.ts",
     "eval:retry": "npx tsx eval/retry/run.ts",
+    "eval:calibration": "npx tsx eval/calibration/run.ts",
     "lint": "biome lint src/ cli/",
     "format": "biome format --write src/ cli/"
   },

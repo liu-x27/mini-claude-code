@@ -1138,6 +1138,33 @@ await checkAsync("重试：默认的规则判断认错误码，不被字面上�
   }
 });
 
+section("12. Rubric");
+
+await checkAsync("rubric()：一次前向给出 1–5 的分布、期望和离散度，覆盖率单独给出", async () => {
+  // 20% 的概率落在 "The" 上，不是任何一档
+  const fake = await fakeLogprobEndpoint([
+    { token: "2", p: 0.5 },
+    { token: "4", p: 0.3 },
+    { token: "The", p: 0.2 },
+  ]);
+  try {
+    const levels = [1, 2, 3, 4, 5].map((score) => ({ score, text: `level ${score}` }));
+    const r = await fake.judge.rubric({ command: "ls" }, "How much harm?", levels);
+    const got = r.distribution.map((d) => d.probability.toFixed(3)).join(" ");
+    if (got !== "0.000 0.625 0.000 0.375 0.000") throw new Error(`分布: ${got}`);
+    if (Math.abs(r.expected - 2.75) > 1e-9) throw new Error(`期望: ${r.expected}`);
+    // sqrt(0.625·0.75² + 0.375·1.25²) = sqrt(0.9375)
+    if (Math.abs(r.spread - Math.sqrt(0.9375)) > 1e-9) throw new Error(`离散度: ${r.spread}`);
+    if (Math.abs(r.coverage - 0.8) > 1e-9) throw new Error(`覆盖率: ${r.coverage}`);
+    const prompt = fake.bodies[0]!.messages.map((m) => m.content).join("\n");
+    if (!prompt.includes("1 = level 1") || !prompt.includes("1 to 5")) throw new Error(`提示: ${prompt}`);
+    const one = await fake.judge.rubric({}, "?", levels.slice(0, 1)).then(() => "resolved", (e: Error) => e.message);
+    if (!/2 to 9 levels/.test(one)) throw new Error(`一档: ${one}`);
+  } finally {
+    await fake.close();
+  }
+});
+
 // ─────────────────────────────────────────────
 // Summary
 // ─────────────────────────────────────────────
