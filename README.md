@@ -318,8 +318,9 @@ was `wc -l src/agent.ts`.
 user; the router's resolve to the *expensive* model. Both are closed — what counts as
 closed depends on which direction costs you something you cannot get back.
 
-**Two tiers, so the question stays a yes/no.** `JudgeBackend` has no `choice()` method
-because nothing has needed one; a third tier is what would earn it.
+**Two tiers, so the question stays a yes/no.** A `choice()` primitive exists now — the
+snake arena below needed four outcomes — but two tiers need only one question. A third
+tier is what would move the router onto it.
 
 **It decides once, before turn one.** Routing every turn would save more, since most
 turns are "read this tool output and continue" — but it would also hand one model's
@@ -363,6 +364,55 @@ one-line state cannot answer: a limit of what was asked, not of the idea.
 for the threshold history, the correlation against prompt length, and why the default
 moved from 0.5 to 0.2.
 
+### Four outcomes: `choice()` and the snake arena
+
+The gate and the router both ask yes/no. The first decision with more than two outcomes
+was a snake's next move, and it is what added the second primitive:
+
+```ts
+choice(state, ask, options): Promise<{ answers: { id: string; probability: number }[]; coverage: number }>
+```
+
+The options are labelled A, B, C, D and the model answers with one letter, so all four
+probabilities come out of one forward pass, read off the same top logprobs and
+renormalised over the labels. `coverage` is how much of that token's probability landed
+on the labels at all. With four options there is room for a model to start a sentence
+instead — on one board, an early probe without a system prompt put three quarters of
+it on "To" and "Since" — and a caller should see that, not a confident-looking renormalisation of
+what was left. It is a separate interface, `ChoiceBackend`, rather than a method on
+`JudgeBackend`: the allow-list has no opinion on which way a snake should turn.
+
+![The snake arena playing live against llama3.1:8b](docs/snake-arena.gif)
+
+It is the arena view of the web UI, at `/#arena`. Every move is one
+`POST /api/snake/move`; the server builds the question from the board, in
+`shared/snake.ts`, and asks the same judge the gate uses. The GIF plays at the speed it
+was recorded: about 27 moves a second, the judge's p50 28 ms, llama3.1:8b on a local
+Ollama.
+
+The split is the gate's again. Whether a move is legal is not a judgement, so a rule
+removes the walls and the body before anything is asked, and the model chooses among
+the moves that survive — told, for each, whether it closes on the food and whether it
+leads into a dead end. *Raw cells* hands over the same board undigested, what is in each
+neighbouring cell and where the food is, with all four moves offered, to show what that
+costs. `npm run eval:snake`, 150 random boards:
+
+|  | facts (default) | raw cells |
+|---|---|---|
+| picks a move that survives | 100%, by construction | 30% |
+| picks the best move, when there is one | 133/133 | 43/133 |
+| coverage | 1.000 | 1.000 |
+| per decision, p50 / p95 | 36 / 41 ms | 41 / 46 ms |
+
+Over five whole games the model averages a score of 27.2 to the hand-written rule's
+41.0, agreeing with it on 86% of moves. The rule reads one thing the model is not told —
+the exact room count, which it breaks ties on — and that is most of the gap.
+
+One wording mattered more than the rest. The food move used to say "eats the food", and
+asked which move "gets closer to the food", the model preferred "farther from food" to
+it often enough to circle the food for hundreds of moves: mean score 17.6. "Closer to
+food, eats it" took that to 27.2. A decision model answers the question as worded.
+
 ## Development
 
 ```bash
@@ -404,7 +454,10 @@ cancellation between turns and mid-call, and prompts from one batch queueing. So
 cannot touch a static `deny`, and the four ways each of the gate and the router can fail — a backend
 that throws, times out, skips a question, or answers with something that is not a
 probability in [0, 1]. Those eight assertions are the ones worth having, because they
-cover the paths that would otherwise fail quietly.
+cover the paths that would otherwise fail quietly. `choice()` is tested against a
+stand-in endpoint: answers come back in option order, renormalised over the labels, with
+coverage reported beside them, and a first token with no label in it is an error rather
+than a guess.
 
 Reproducing the tables takes two commands, and the bare ones are not the offline ones —
 both runners default to `--backend llm`:

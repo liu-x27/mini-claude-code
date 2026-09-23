@@ -38,7 +38,19 @@ import * as os from "node:os";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
+import * as http from "node:http";
 import chalk from "chalk";
+import { LlmJudge } from "../src/judge/llm.js";
+import {
+  type Board,
+  isBoard,
+  legalMoves,
+  moveFacts,
+  ruleMove,
+  seededRandom,
+  snakeQuestion,
+  step,
+} from "../shared/snake.js";
 
 const REPO_ROOT = fileURLToPath(new URL("..", import.meta.url));
 
@@ -850,6 +862,157 @@ check("renderMarkdown：该有的格式照样有", () => {
     '<pre class="md-pre" data-lang="ts"><code>const a = 1 &lt; 2;</code></pre>']) {
     if (!html.includes(want)) throw new Error(`缺少 ${want}：${html}`);
   }
+});
+
+section("9. Choice and the snake arena");
+
+/**
+ * A stand-in for an OpenAI-compatible endpoint that answers every completion
+ * with the given top logprobs, and keeps the request bodies it was sent.
+ */
+async function fakeLogprobEndpoint(top: Array<{ token: string; p: number }>) {
+  const bodies: Array<{ messages: Array<{ role: string; content: string }>; top_logprobs?: number }> = [];
+  const server = http.createServer((req, res) => {
+    let raw = "";
+    req.on("data", (c) => (raw += c));
+    req.on("end", () => {
+      bodies.push(JSON.parse(raw));
+      const logprobs = top.map((t) => ({ token: t.token, logprob: Math.log(t.p), bytes: null }));
+      res.setHeader("content-type", "application/json");
+      res.end(
+        JSON.stringify({
+          id: "x",
+          object: "chat.completion",
+          created: 0,
+          model: "fake",
+          choices: [
+            {
+              index: 0,
+              message: { role: "assistant", content: top[0]?.token ?? "" },
+              finish_reason: "stop",
+              logprobs: { content: [{ token: top[0]?.token ?? "", logprob: 0, bytes: null, top_logprobs: logprobs }] },
+            },
+          ],
+        }),
+      );
+    });
+  });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  const { port } = server.address() as { port: number };
+  const judge = new LlmJudge({ apiKey: "test", baseURL: `http://127.0.0.1:${port}/v1`, model: "fake" });
+  return { judge, bodies, close: () => new Promise<void>((r) => server.close(() => r())) };
+}
+
+await checkAsync("choice()：一次前向读出每个选项的概率，按选项顺序归一，覆盖率单独给出", async () => {
+  // 20% 的概率落在 "To" 上——模型想写一句话，而不是回答选项
+  const fake = await fakeLogprobEndpoint([
+    { token: "B", p: 0.6 },
+    { token: "A", p: 0.2 },
+    { token: "To", p: 0.2 },
+  ]);
+  try {
+    const r = await fake.judge.choice({ up: "closer to food" }, "Which move?", [
+      { id: "up", text: "up" },
+      { id: "left", text: "left" },
+      { id: "right", text: "right" },
+    ]);
+    const got = r.answers.map((a) => `${a.id}=${a.probability.toFixed(2)}`).join(" ");
+    if (got !== "up=0.25 left=0.75 right=0.00") throw new Error(`答案: ${got}`);
+    if (Math.abs(r.coverage - 0.8) > 1e-9) throw new Error(`覆盖率: ${r.coverage}`);
+    const prompt = fake.bodies[0]!.messages.map((m) => m.content).join("\n");
+    for (const want of ["A. up", "B. left", "C. right", "A, B or C", "up: closer to food"]) {
+      if (!prompt.includes(want)) throw new Error(`提示里缺少 ${JSON.stringify(want)}：${prompt}`);
+    }
+    if ((fake.bodies[0]!.top_logprobs ?? 0) < 7) throw new Error(`top_logprobs 太少: ${fake.bodies[0]!.top_logprobs}`);
+  } finally {
+    await fake.close();
+  }
+});
+
+await checkAsync("choice()：首词里没有任何选项字母、或选项少于两个，都报错而不是瞎猜", async () => {
+  const fake = await fakeLogprobEndpoint([{ token: "Since", p: 0.9 }]);
+  try {
+    const opts = [
+      { id: "up", text: "up" },
+      { id: "down", text: "down" },
+    ];
+    const noLabel = await fake.judge.choice({}, "Which?", opts).then(() => "resolved", (e: Error) => e.message);
+    if (!/no option label/.test(noLabel)) throw new Error(`没有选项字母: ${noLabel}`);
+    const one = await fake.judge.choice({}, "Which?", opts.slice(0, 1)).then(() => "resolved", (e: Error) => e.message);
+    if (!/2 to 8 options/.test(one)) throw new Error(`一个选项: ${one}`);
+  } finally {
+    await fake.close();
+  }
+});
+
+// A board drawn by hand, 5×5: head H at (3,2) heading right, food F at (2,4).
+//   . . . . .
+//   . . . . .
+//   . T B H .
+//   . . . . .
+//   . . F . .
+const small: Board = { size: 5, snake: [{ x: 3, y: 2 }, { x: 2, y: 2 }, { x: 1, y: 2 }], food: { x: 2, y: 4 } };
+
+check("snake：撞墙、撞身体不合法；蛇尾这一步会让开，可以走", () => {
+  if (legalMoves(small).join(",") !== "up,down,right") throw new Error(`合法步: ${legalMoves(small)}`);
+  const curled: Board = { size: 5, snake: [{ x: 1, y: 1 }, { x: 2, y: 1 }, { x: 2, y: 2 }, { x: 1, y: 2 }], food: { x: 4, y: 4 } };
+  // (1,2) 是蛇尾：走过去时它正好移走
+  if (!legalMoves(curled).includes("down")) throw new Error(`蛇尾那格应当可走: ${legalMoves(curled)}`);
+  const corner: Board = { size: 5, snake: [{ x: 4, y: 0 }, { x: 3, y: 0 }, { x: 2, y: 0 }], food: { x: 0, y: 4 } };
+  if (legalMoves(corner).join(",") !== "down") throw new Error(`角落: ${legalMoves(corner)}`);
+});
+
+check("snake：吃到食物才变长，食物换位置；撞上去判死", () => {
+  const random = seededRandom(1);
+  const board: Board = { size: 5, snake: [{ x: 2, y: 3 }, { x: 2, y: 2 }, { x: 2, y: 1 }], food: { x: 2, y: 4 } };
+  const ate = step(board, "down", random);
+  if (!ate.ate || ate.board.snake.length !== 4) throw new Error(`吃: ${JSON.stringify(ate)}`);
+  if (ate.board.snake.some((s) => s.x === ate.board.food.x && s.y === ate.board.food.y)) throw new Error("新食物落在蛇身上");
+  const moved = step(small, "up", random);
+  if (moved.ate || moved.board.snake.length !== 3) throw new Error(`没吃不该变长: ${JSON.stringify(moved.board.snake)}`);
+  if (!step(small, "left", random).dead) throw new Error("掉头撞脖子应当判死");
+});
+
+check("snake：问题只提供合法的步，每步一行事实；raw 模式四个方向都给", () => {
+  const q = snakeQuestion(small, "facts");
+  if (q.options.map((o) => o.id).join(",") !== "up,down,right") throw new Error(`选项: ${JSON.stringify(q.options)}`);
+  if (q.state["down"] !== "closer to food, enough room") throw new Error(`down 的描述: ${q.state["down"]}`);
+  if ("left" in q.state) throw new Error("不合法的步不该出现在状态里");
+  const raw = snakeQuestion(small, "raw");
+  if (raw.options.length !== 4 || raw.state["left"] !== "body" || raw.state["food"] !== "1 left, 2 down") {
+    throw new Error(`raw: ${JSON.stringify(raw.state)}`);
+  }
+});
+
+check("snake：规则先躲死路，再吃、再靠近", () => {
+  // 往右进的是顶边两格的口袋，被墙和自己的身子围住，食物就在里面；往左是开阔地
+  //   . . L H > F
+  //   . . . B B B
+  //   . . . T B B
+  const trap: Board = {
+    size: 6,
+    snake: [{ x: 3, y: 0 }, { x: 3, y: 1 }, { x: 4, y: 1 }, { x: 5, y: 1 }, { x: 5, y: 2 }, { x: 4, y: 2 }, { x: 3, y: 2 }],
+    food: { x: 5, y: 0 },
+  };
+  const facts = moveFacts(trap);
+  const right = facts.find((f) => f.dir === "right");
+  if (!right?.deadEnd || !right.closer) throw new Error(`right 应当是更近但死路: ${JSON.stringify(facts)}`);
+  if (ruleMove(trap) === "right") throw new Error("规则走进了死路");
+});
+
+check("snake：接口只收合法的棋盘", () => {
+  if (!isBoard(small)) throw new Error("合法棋盘被拒");
+  const bad: unknown[] = [
+    null,
+    { ...small, size: 100 },
+    { ...small, snake: [] },
+    { ...small, food: { x: 3, y: 2 } }, // 食物在蛇身上
+    { ...small, snake: [{ x: 3, y: 2 }, { x: 3, y: 2 }] }, // 重复格子
+    { ...small, snake: [{ x: 9, y: 2 }] }, // 出界
+    { ...small, snake: [{ x: 1.5, y: 2 }] },
+  ];
+  const accepted = bad.filter((b) => isBoard(b));
+  if (accepted.length) throw new Error(`接受了: ${JSON.stringify(accepted)}`);
 });
 
 // ─────────────────────────────────────────────

@@ -14,6 +14,7 @@ import "./styles/base.css";
 import "./styles/instrument.css";
 import "./styles/editorial.css";
 import "./styles/aurora.css";
+import "./styles/arena.css";
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>

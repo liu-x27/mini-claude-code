@@ -4,6 +4,7 @@ import { Agent } from "../src/agent.js";
 import { AllowlistJudge } from "../src/judge/allowlist.js";
 import { createRiskGate } from "../src/judge/gate.js";
 import { LlmJudge } from "../src/judge/llm.js";
+import type { ChoiceBackend } from "../src/judge/types.js";
 import { AnthropicClient } from "../src/model/anthropic.js";
 import { OpenAICompatibleClient } from "../src/model/openai.js";
 import type { ModelClient } from "../src/model/types.js";
@@ -18,6 +19,8 @@ import type {
   RiskGate,
 } from "../src/types.js";
 
+import { isBoard, snakeQuestion } from "../shared/snake.js";
+
 registerBuiltinTools();
 
 // ─────────────────────────────────────────────
@@ -31,7 +34,7 @@ registerBuiltinTools();
  * hint that a judge is silently deferring everything, so a judge that cannot
  * answer has to be reported at startup and then removed.
  */
-async function buildGate(): Promise<{ gate: RiskGate | undefined; label: string }> {
+async function buildGate(): Promise<{ gate: RiskGate | undefined; label: string; chooser?: ChoiceBackend }> {
   const wantsLlm = !!(process.env["AGENT_JUDGE_API_KEY"] || process.env["AGENT_JUDGE_BASE_URL"]);
 
   if (wantsLlm) {
@@ -39,7 +42,9 @@ async function buildGate(): Promise<{ gate: RiskGate | undefined; label: string 
       const judge = new LlmJudge();
       const capability = await judge.probe();
       if (capability.logprobs) {
-        return { gate: createRiskGate({ backend: judge }), label: judge.name };
+        // The same model answers the arena's choice questions; the
+        // allow-list fallback below cannot, so the arena needs this branch.
+        return { gate: createRiskGate({ backend: judge }), label: judge.name, chooser: judge };
       }
       console.warn(`   judge ${judge.name} returned no logprobs (${capability.detail})`);
     } catch (err) {
@@ -51,7 +56,7 @@ async function buildGate(): Promise<{ gate: RiskGate | undefined; label: string 
   return { gate: createRiskGate({ backend: new AllowlistJudge() }), label: "allowlist" };
 }
 
-const { gate, label: gateLabel } = await buildGate();
+const { gate, label: gateLabel, chooser } = await buildGate();
 
 /**
  * Approvals waiting on a human, keyed by an id the browser echoes back.
@@ -112,6 +117,8 @@ app.get("/api/health", (_req, res) => {
     hasApiKey: !!process.env["ANTHROPIC_API_KEY"],
     tools: globalRegistry.names(),
     judge: gate ? gateLabel : null,
+    // Whether the snake arena can ask a model, or only run its rule.
+    choice: chooser ? chooser.name : null,
   });
 });
 
@@ -133,6 +140,62 @@ app.delete("/api/sessions/:id", async (req, res) => {
 
 // ─────────────────────────────────────────────
 // POST /api/permission  (answer a parked tool call)
+// ─────────────────────────────────────────────
+// POST /api/snake/move
+// ─────────────────────────────────────────────
+/** Past this, a move is a fallback: the game should not wait on a hung judge. */
+const SNAKE_TIMEOUT_MS = 3000;
+
+/**
+ * One move in the snake arena, decided by the judge's `choice()`.
+ *
+ * Takes a board rather than a prompt. The question is built here, from
+ * shared/snake.ts, so the browser can ask for a move and nothing else — this
+ * is not a way to put arbitrary text in front of the judge model.
+ */
+app.post("/api/snake/move", async (req, res) => {
+  if (!chooser) {
+    res.status(503).json({
+      error: "No model judge — start the server with AGENT_JUDGE_BASE_URL and AGENT_JUDGE_MODEL set.",
+    });
+    return;
+  }
+  const { board, mode } = (req.body ?? {}) as { board?: unknown; mode?: unknown };
+  if (!isBoard(board)) {
+    res.status(400).json({ error: "not a valid board" });
+    return;
+  }
+  const question = snakeQuestion(board, mode === "raw" ? "raw" : "facts");
+  if (question.options.length === 0) {
+    res.status(422).json({ error: "no legal move" });
+    return;
+  }
+  if (question.options.length === 1) {
+    // Nothing to decide, and not worth a round trip to say so.
+    res.json({ answers: [{ id: question.options[0]!.id, probability: 1 }], coverage: 1, latencyMs: 0, forced: true });
+    return;
+  }
+
+  const started = performance.now();
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    const result = await Promise.race([
+      chooser.choice(question.state, question.ask, question.options),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`no answer in ${SNAKE_TIMEOUT_MS} ms`)), SNAKE_TIMEOUT_MS);
+      }),
+    ]);
+    res.json({ ...result, latencyMs: Math.round(performance.now() - started), judge: chooser.name });
+  } catch (err) {
+    res.status(502).json({
+      error: err instanceof Error ? err.message : String(err),
+      latencyMs: Math.round(performance.now() - started),
+    });
+  } finally {
+    clearTimeout(timer);
+  }
+});
+
 // ─────────────────────────────────────────────
 app.post("/api/permission", (req, res) => {
   const { id, decision } = req.body as { id?: string; decision?: PermissionDecision };

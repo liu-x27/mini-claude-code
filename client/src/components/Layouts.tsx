@@ -1,14 +1,19 @@
 import type { ReactNode, RefObject, UIEventHandler } from "react";
 import { ALL_MODELS } from "../lib/providers";
 import { nextTheme, THEMES, type Theme } from "../lib/theme";
-import { Icon } from "./Icon";
+import { Icon, type IconName } from "./Icon";
+
+export type View = "chat" | "arena";
 
 /**
  * The three frames. Each arranges the same parts — transcript, composer,
- * notice, and for Instrument the decision rail — in its own way; none of
- * them owns any state.
+ * notice, the arena, and for Instrument the decision rail — in its own way;
+ * none of them owns any state.
  */
 export interface FrameProps {
+  view: View;
+  onView: (v: View) => void;
+  arena: ReactNode;
   theme: Theme;
   onCycleTheme: () => void;
   model: string;
@@ -53,6 +58,35 @@ function ModelInput({ model, onModel, id }: { model: string; onModel: (m: string
   );
 }
 
+/** Switches the view; marked as the current page when it is the one showing. */
+function NavButton({
+  p,
+  view,
+  label,
+  icon,
+  text,
+}: {
+  p: FrameProps;
+  view: View;
+  label: string;
+  icon?: IconName;
+  text?: boolean;
+}) {
+  const on = p.view === view;
+  return (
+    <button
+      type="button"
+      className={`${text ? "text-btn" : "icon-btn"}${on ? " is-on" : ""}`}
+      onClick={() => p.onView(view)}
+      title={label}
+      aria-label={label}
+      aria-current={on ? "page" : undefined}
+    >
+      {text ? label : <Icon name={icon ?? "chat"} />}
+    </button>
+  );
+}
+
 function ThemeButton({ theme, onCycle, text }: { theme: Theme; onCycle: () => void; text?: boolean }) {
   const next = themeLabel(nextTheme(theme));
   return (
@@ -62,22 +96,29 @@ function ThemeButton({ theme, onCycle, text }: { theme: Theme; onCycle: () => vo
   );
 }
 
-const Thread = ({ p }: { p: FrameProps }) => (
-  <div className="thread" ref={p.threadRef} onScroll={p.onScroll}>
-    <div className="thread-inner">{p.thread}</div>
-  </div>
-);
+/** The transcript and its composer, or the arena in their place. */
+const Body = ({ p }: { p: FrameProps }) =>
+  p.view === "arena" ? (
+    <div className="arena-scroll">{p.arena}</div>
+  ) : (
+    <>
+      {p.notice}
+      <div className="thread" ref={p.threadRef} onScroll={p.onScroll}>
+        <div className="thread-inner">{p.thread}</div>
+      </div>
+      {p.composer}
+    </>
+  );
 
 /* ------------------------------------------------------------ Instrument */
 
 export function InstrumentFrame(p: FrameProps) {
   return (
-    <div className="frame">
+    <div className="frame" data-view={p.view}>
       <nav className="nav-rail" aria-label="Navigation">
         <span className="brand-mark" aria-hidden="true" />
-        <button type="button" className="icon-btn is-on" title="Transcript" aria-label="Transcript" aria-current="page">
-          <Icon name="chat" />
-        </button>
+        <NavButton p={p} view="chat" icon="chat" label="Transcript" />
+        <NavButton p={p} view="arena" icon="snake" label="Snake arena" />
         <button type="button" className="icon-btn" onClick={p.onToggleSessions} title="Sessions" aria-label="Toggle sessions">
           <Icon name="panel" />
         </button>
@@ -91,7 +132,7 @@ export function InstrumentFrame(p: FrameProps) {
         <header className="topbar">
           <div className="crumb">
             agent<span>/</span>
-            {p.sessionId ? `session ${p.sessionId.slice(0, 8)}` : "new session"}
+            {p.view === "arena" ? "snake arena" : p.sessionId ? `session ${p.sessionId.slice(0, 8)}` : "new session"}
           </div>
           <span className="grow" />
           <label className="pill model-pill" data-busy={p.busy || undefined}>
@@ -103,17 +144,15 @@ export function InstrumentFrame(p: FrameProps) {
               {p.totals.tokens.toLocaleString()} tok · ${p.totals.cost.toFixed(4)}
             </span>
           )}
-          {p.hasMessages && (
+          {p.hasMessages && p.view === "chat" && (
             <button type="button" className="icon-btn" onClick={p.onNewChat} title="New chat" aria-label="New chat">
               <Icon name="plus" />
             </button>
           )}
         </header>
-        {p.notice}
-        <Thread p={p} />
-        {p.composer}
+        <Body p={p} />
       </main>
-      {p.rail}
+      {p.view === "chat" && p.rail}
     </div>
   );
 }
@@ -123,7 +162,7 @@ export function InstrumentFrame(p: FrameProps) {
 export function EditorialFrame(p: FrameProps) {
   const today = new Date().toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" });
   return (
-    <div className="frame">
+    <div className="frame" data-view={p.view}>
       <div className="page">
         <header className="mast">
           <h1>
@@ -150,9 +189,8 @@ export function EditorialFrame(p: FrameProps) {
           </dl>
         </header>
         <nav className="subnav">
-          <button type="button" className="text-btn is-on" aria-current="page">
-            Transcript
-          </button>
+          <NavButton p={p} view="chat" label="Transcript" text />
+          <NavButton p={p} view="arena" label="Arena" text />
           <button type="button" className="text-btn" onClick={p.onToggleSessions}>
             Sessions
           </button>
@@ -164,15 +202,13 @@ export function EditorialFrame(p: FrameProps) {
             {today} · {p.turns} {p.turns === 1 ? "turn" : "turns"}
           </span>
           <ThemeButton theme={p.theme} onCycle={p.onCycleTheme} text />
-          {p.hasMessages && (
+          {p.hasMessages && p.view === "chat" && (
             <button type="button" className="text-btn" onClick={p.onNewChat}>
               New
             </button>
           )}
         </nav>
-        {p.notice}
-        <Thread p={p} />
-        {p.composer}
+        <Body p={p} />
       </div>
     </div>
   );
@@ -182,7 +218,7 @@ export function EditorialFrame(p: FrameProps) {
 
 export function AuroraFrame(p: FrameProps) {
   return (
-    <div className="frame">
+    <div className="frame" data-view={p.view}>
       <div className="aurora" aria-hidden="true">
         <i />
         <i />
@@ -205,6 +241,11 @@ export function AuroraFrame(p: FrameProps) {
             </span>
           )}
           {p.totals.tokens > 0 && <span className="chip">${p.totals.cost.toFixed(4)}</span>}
+          {p.view === "arena" ? (
+            <NavButton p={p} view="chat" icon="chat" label="Transcript" />
+          ) : (
+            <NavButton p={p} view="arena" icon="snake" label="Snake arena" />
+          )}
           <button type="button" className="icon-btn" onClick={p.onToggleSessions} title="Sessions" aria-label="Toggle sessions">
             <Icon name="panel" />
           </button>
@@ -212,15 +253,13 @@ export function AuroraFrame(p: FrameProps) {
           <button type="button" className="icon-btn" onClick={p.onOpenSettings} title="Settings" aria-label="Settings">
             <Icon name="settings" />
           </button>
-          {p.hasMessages && (
+          {p.hasMessages && p.view === "chat" && (
             <button type="button" className="icon-btn" onClick={p.onNewChat} title="New chat" aria-label="New chat">
               <Icon name="plus" />
             </button>
           )}
         </header>
-        {p.notice}
-        <Thread p={p} />
-        {p.composer}
+        <Body p={p} />
       </div>
     </div>
   );

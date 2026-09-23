@@ -2,11 +2,13 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { Composer, type ComposerHandle } from "./components/Composer";
 import { DecisionRail, gatedCalls, medianLatency } from "./components/DecisionRail";
 import { Icon } from "./components/Icon";
-import { FRAMES } from "./components/Layouts";
+import { Arena } from "./components/Arena";
+import { FRAMES, type View } from "./components/Layouts";
 import { Sessions } from "./components/Sessions";
 import { type Settings, SettingsPanel } from "./components/SettingsPanel";
 import { EmptyState, Thread } from "./components/Thread";
 import { type Provider, useChat } from "./hooks/useChat";
+import { useSnakeArena } from "./hooks/useSnakeArena";
 import { DEFAULT_TOOLS } from "./lib/providers";
 import { useTheme } from "./lib/theme";
 
@@ -41,7 +43,26 @@ export default function App() {
   const [serverJudge, setServerJudge] = useState<string | undefined>();
   const [input, setInput] = useState("");
   const [sessionsOpen, setSessionsOpen] = useState(false);
+  const [serverChoice, setServerChoice] = useState<string | undefined>();
+  // The arena has an address, so it can be linked to and reloaded into.
+  const [view, setView] = useState<View>(() => (location.hash === "#arena" ? "arena" : "chat"));
+  useEffect(() => {
+    const onHash = () => setView(location.hash === "#arena" ? "arena" : "chat");
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
+  const changeView = useCallback((v: View) => {
+    setView(v);
+    history.replaceState(null, "", v === "arena" ? "#arena" : location.pathname + location.search);
+  }, []);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const arena = useSnakeArena(serverChoice);
+  // A game left running in the background would keep the judge busy, and it
+  // is the same model the risk gate is waiting on.
+  const pauseArena = arena.setRunning;
+  useEffect(() => {
+    if (view !== "arena") pauseArena(false);
+  }, [view, pauseArena]);
 
   const { state, send, stop, clear, respond } = useChat(
     settings.apiKey,
@@ -58,9 +79,10 @@ export default function App() {
   useEffect(() => {
     fetch("/api/health")
       .then((r) => r.json())
-      .then((d: { hasApiKey?: boolean; tools?: string[]; judge?: string | null }) => {
+      .then((d: { hasApiKey?: boolean; tools?: string[]; judge?: string | null; choice?: string | null }) => {
         setServerHasKey(!!d.hasApiKey);
         if (typeof d.judge === "string") setServerJudge(d.judge);
+        if (typeof d.choice === "string") setServerChoice(d.choice);
         if (Array.isArray(d.tools) && d.tools.length) {
           setTools(d.tools);
           setEnabledTools(d.tools);
@@ -100,7 +122,7 @@ export default function App() {
   useLayoutEffect(() => {
     const el = threadRef.current;
     if (el && pinned.current) el.scrollTop = el.scrollHeight;
-  }, [state.messages, state.pendingApproval, theme]);
+  }, [state.messages, state.pendingApproval, theme, view]);
 
   const composerRef = useRef<ComposerHandle>(null);
   const handleSend = useCallback(() => {
@@ -122,6 +144,9 @@ export default function App() {
   return (
     <div className="app">
       <Frame
+        view={view}
+        onView={changeView}
+        arena={<Arena game={arena} judge={serverChoice} />}
         theme={theme}
         onCycleTheme={cycleTheme}
         model={settings.model}

@@ -20,6 +20,7 @@
     "test": "npx tsx examples/00-mock-test.ts",
     "eval:risk-gate": "npx tsx eval/risk-gate/run.ts",
     "eval:routing": "npx tsx eval/routing/run.ts",
+    "eval:snake": "npx tsx eval/snake/run.ts",
     "lint": "biome lint src/ cli/",
     "format": "biome format --write src/ cli/"
   },
