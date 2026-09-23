@@ -132,7 +132,7 @@ export function InstrumentFrame(p: FrameProps) {
         <header className="topbar">
           <div className="crumb">
             agent<span>/</span>
-            {p.view === "arena" ? "snake arena" : p.sessionId ? `session ${p.sessionId.slice(0, 8)}` : "new session"}
+            {p.view === "arena" ? "arena" : p.sessionId ? `session ${p.sessionId.slice(0, 8)}` : "new session"}
           </div>
           <span className="grow" />
           <label className="pill model-pill" data-busy={p.busy || undefined}>

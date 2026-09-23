@@ -51,6 +51,16 @@ import {
   snakeQuestion,
   step,
 } from "../shared/snake.js";
+import {
+  BIRD_X,
+  type Flight,
+  flapState,
+  forcedFlap,
+  isFlight,
+  newFlight,
+  ruleFlap,
+  tick as tickFlight,
+} from "../shared/flappy.js";
 
 const REPO_ROOT = fileURLToPath(new URL("..", import.meta.url));
 
@@ -1013,6 +1023,35 @@ check("snake：接口只收合法的棋盘", () => {
   ];
   const accepted = bad.filter((b) => isBoard(b));
   if (accepted.length) throw new Error(`接受了: ${JSON.stringify(accepted)}`);
+});
+
+section("10. Flappy on a clock");
+
+check("flappy：规则自己飞，不漏拍就一直不撞", () => {
+  const random = seededRandom(1);
+  let f = newFlight(random);
+  for (let t = 0; t < 5000; t++) {
+    const r = tickFlight(f, ruleFlap(f), random);
+    if (r.dead) throw new Error(`第 ${t} 拍撞了，过了 ${r.flight.score} 根管子`);
+    f = r.flight;
+  }
+  if (f.score < 100) throw new Error(`5000 拍只过了 ${f.score} 根管子`);
+});
+
+check("flappy：拍一下会撞上面的管子时由规则决定、不问模型；平常只给模型一句事实", () => {
+  // 鸟在管子里、离缺口上沿很近：一拍就顶上去，不拍往下掉还在缺口里
+  const tight: Flight = { y: 5.8, vy: 0, pipes: [{ x: BIRD_X - 0.5, gapTop: 5, passed: false }], score: 0, ticks: 0 };
+  if (forcedFlap(tight) !== false) throw new Error(`应当由规则判"不拍"：${forcedFlap(tight)}`);
+  const open = newFlight(seededRandom(2));
+  if (forcedFlap(open) !== undefined) throw new Error("开阔处不该由规则代答");
+  const state = flapState(open);
+  if (Object.keys(state).join() !== "if it does not flap") throw new Error(`状态应只有一句：${JSON.stringify(state)}`);
+});
+
+check("flappy：接口只收合法的飞行状态", () => {
+  if (!isFlight(newFlight(seededRandom(3)))) throw new Error("合法状态被拒");
+  const bad: unknown[] = [null, { y: 1 }, { ...newFlight(seededRandom(3)), y: Number.NaN }, { ...newFlight(seededRandom(3)), pipes: [] }];
+  if (bad.some((b) => isFlight(b))) throw new Error("接受了不合法的状态");
 });
 
 // ─────────────────────────────────────────────

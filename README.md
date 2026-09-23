@@ -413,6 +413,44 @@ asked which move "gets closer to the food", the model preferred "farther from fo
 it often enough to circle the food for hundreds of moves: mean score 17.6. "Closer to
 food, eats it" took that to 27.2. A decision model answers the question as worded.
 
+### On a clock: Flappy
+
+The snake waits for its judge, so speed there is only a number on the screen. The
+arena's second tab runs on a clock instead: every tick is one yes/no question — flap or
+not — with a budget, and an answer that is not back inside it is a miss. The bird does
+nothing that tick, the way a controller falls back to its no-op, and while a late
+question is still being answered no new one is sent, so a slow judge misses several
+ticks in a row.
+
+![Flappy against a 30 ms budget, live against llama3.1:8b](docs/flappy-arena.gif)
+
+`npm run eval:flappy`, llama3.1:8b on a local Ollama, one question per tick:
+
+| budget per tick | ticks missed | pipes passed, 3 flights |
+|---|---|---|
+| 60 ms | 0.0% | 21+ 21+ 21+ |
+| 30 ms | 0.3% | 21+ 21+ 21+ |
+| 20 ms | 31% | 1, 0, 0 |
+| 15 ms | 95% | 0, 0, 0 |
+
+21+ is the tick limit, not a crash. Answers take 15 ms at the median and 26–30 ms at
+p95, so the cliff sits between 30 and 20 ms. The browser adds its own round trip and
+rendering: at 30 ms it missed 5–6% of ticks in Instrument and about 9% in Aurora,
+whose blur makes every frame slower to draw.
+
+Getting to a judge that flies at all took one finding worth more than the numbers.
+Asked a single question over both facts — what happens if it flaps, and if it does
+not — llama3.1:8b got four of the six possible combinations right, and one it got wrong
+was fatal: told that waiting keeps it in the gap and flapping hits the pipe above, it
+flapped, at 0.62. A two-way `choice()` between the outcomes did worse (3 of 6), and so
+did two narrow yes/no questions (3 of 6): "does flapping crash?" was answered perfectly,
+"does waiting leave the gap?" never cleared 0.47. It reads one fact well and does not
+combine two. So it is given one — what happens if it does not flap — and a flap that
+would crash is the rule's call, not a question, as a wall is for the snake. With that it
+agrees with the rule on every sampled tick. The threshold is 0.6 rather than 0.5 because
+the judge answers 0.486 for "it stays in the gap": right, by a margin a quantisation
+change could erase.
+
 ## Development
 
 ```bash

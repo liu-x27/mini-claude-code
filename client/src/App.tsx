@@ -2,12 +2,13 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { Composer, type ComposerHandle } from "./components/Composer";
 import { DecisionRail, gatedCalls, medianLatency } from "./components/DecisionRail";
 import { Icon } from "./components/Icon";
-import { Arena } from "./components/Arena";
+import { ArenaView } from "./components/ArenaView";
 import { FRAMES, type View } from "./components/Layouts";
 import { Sessions } from "./components/Sessions";
 import { type Settings, SettingsPanel } from "./components/SettingsPanel";
 import { EmptyState, Thread } from "./components/Thread";
 import { type Provider, useChat } from "./hooks/useChat";
+import { useFlappyArena } from "./hooks/useFlappyArena";
 import { useSnakeArena } from "./hooks/useSnakeArena";
 import { DEFAULT_TOOLS } from "./lib/providers";
 import { useTheme } from "./lib/theme";
@@ -45,9 +46,10 @@ export default function App() {
   const [sessionsOpen, setSessionsOpen] = useState(false);
   const [serverChoice, setServerChoice] = useState<string | undefined>();
   // The arena has an address, so it can be linked to and reloaded into.
-  const [view, setView] = useState<View>(() => (location.hash === "#arena" ? "arena" : "chat"));
+  const isArena = () => location.hash.startsWith("#arena");
+  const [view, setView] = useState<View>(() => (isArena() ? "arena" : "chat"));
   useEffect(() => {
-    const onHash = () => setView(location.hash === "#arena" ? "arena" : "chat");
+    const onHash = () => setView(isArena() ? "arena" : "chat");
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
@@ -57,12 +59,17 @@ export default function App() {
   }, []);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const arena = useSnakeArena(serverChoice);
+  const flappy = useFlappyArena(serverChoice);
   // A game left running in the background would keep the judge busy, and it
   // is the same model the risk gate is waiting on.
   const pauseArena = arena.setRunning;
+  const pauseFlappy = flappy.setRunning;
   useEffect(() => {
-    if (view !== "arena") pauseArena(false);
-  }, [view, pauseArena]);
+    if (view !== "arena") {
+      pauseArena(false);
+      pauseFlappy(false);
+    }
+  }, [view, pauseArena, pauseFlappy]);
 
   const { state, send, stop, clear, respond } = useChat(
     settings.apiKey,
@@ -146,7 +153,7 @@ export default function App() {
       <Frame
         view={view}
         onView={changeView}
-        arena={<Arena game={arena} judge={serverChoice} />}
+        arena={<ArenaView snake={arena} flappy={flappy} judge={serverChoice} />}
         theme={theme}
         onCycleTheme={cycleTheme}
         model={settings.model}

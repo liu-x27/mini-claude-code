@@ -4,7 +4,7 @@ import { Agent } from "../src/agent.js";
 import { AllowlistJudge } from "../src/judge/allowlist.js";
 import { createRiskGate } from "../src/judge/gate.js";
 import { LlmJudge } from "../src/judge/llm.js";
-import type { ChoiceBackend } from "../src/judge/types.js";
+import type { ChoiceBackend, JudgeBackend } from "../src/judge/types.js";
 import { AnthropicClient } from "../src/model/anthropic.js";
 import { OpenAICompatibleClient } from "../src/model/openai.js";
 import type { ModelClient } from "../src/model/types.js";
@@ -19,6 +19,7 @@ import type {
   RiskGate,
 } from "../src/types.js";
 
+import { FLAP_QUESTION, flapState, forcedFlap, isFlight } from "../shared/flappy.js";
 import { isBoard, snakeQuestion } from "../shared/snake.js";
 
 registerBuiltinTools();
@@ -34,7 +35,7 @@ registerBuiltinTools();
  * hint that a judge is silently deferring everything, so a judge that cannot
  * answer has to be reported at startup and then removed.
  */
-async function buildGate(): Promise<{ gate: RiskGate | undefined; label: string; chooser?: ChoiceBackend }> {
+async function buildGate(): Promise<{ gate: RiskGate | undefined; label: string; model?: LlmJudge }> {
   const wantsLlm = !!(process.env["AGENT_JUDGE_API_KEY"] || process.env["AGENT_JUDGE_BASE_URL"]);
 
   if (wantsLlm) {
@@ -42,9 +43,9 @@ async function buildGate(): Promise<{ gate: RiskGate | undefined; label: string;
       const judge = new LlmJudge();
       const capability = await judge.probe();
       if (capability.logprobs) {
-        // The same model answers the arena's choice questions; the
-        // allow-list fallback below cannot, so the arena needs this branch.
-        return { gate: createRiskGate({ backend: judge }), label: judge.name, chooser: judge };
+        // The same model answers the arena's questions; the allow-list
+        // fallback below cannot, so the arena needs this branch.
+        return { gate: createRiskGate({ backend: judge }), label: judge.name, model: judge };
       }
       console.warn(`   judge ${judge.name} returned no logprobs (${capability.detail})`);
     } catch (err) {
@@ -56,7 +57,10 @@ async function buildGate(): Promise<{ gate: RiskGate | undefined; label: string;
   return { gate: createRiskGate({ backend: new AllowlistJudge() }), label: "allowlist" };
 }
 
-const { gate, label: gateLabel, chooser } = await buildGate();
+const { gate, label: gateLabel, model: arenaJudge } = await buildGate();
+/** Snake asks it to pick one of four; Flappy asks it yes or no. */
+const chooser: ChoiceBackend | undefined = arenaJudge;
+const flapJudge: JudgeBackend | undefined = arenaJudge;
 
 /**
  * Approvals waiting on a human, keyed by an id the browser echoes back.
@@ -193,6 +197,49 @@ app.post("/api/snake/move", async (req, res) => {
     });
   } finally {
     clearTimeout(timer);
+  }
+});
+
+// ─────────────────────────────────────────────
+// POST /api/flappy/flap
+// ─────────────────────────────────────────────
+/**
+ * One tick of Flappy: flap or not, as P(yes) from the judge.
+ *
+ * No deadline here. The browser owns the clock — it decides whether an
+ * answer came back in time, and does not send the next question while this
+ * one is still being answered — so the server's only job is to answer, and
+ * to say how long the judge took.
+ */
+app.post("/api/flappy/flap", async (req, res) => {
+  if (!flapJudge) {
+    res.status(503).json({
+      error: "No model judge — start the server with AGENT_JUDGE_BASE_URL and AGENT_JUDGE_MODEL set.",
+    });
+    return;
+  }
+  const { flight } = (req.body ?? {}) as { flight?: unknown };
+  if (!isFlight(flight)) {
+    res.status(400).json({ error: "not a valid flight" });
+    return;
+  }
+  const forced = forcedFlap(flight);
+  if (forced !== undefined) {
+    // Flapping would crash: the rule's call, not a question.
+    res.json({ probability: forced ? 1 : 0, latencyMs: 0, forced: true });
+    return;
+  }
+  const started = performance.now();
+  try {
+    const [answer] = await flapJudge.noul(flapState(flight), [FLAP_QUESTION]);
+    const p = answer?.probability;
+    if (typeof p !== "number" || !(p >= 0 && p <= 1)) throw new Error("the judge gave no probability");
+    res.json({ probability: p, latencyMs: Math.round(performance.now() - started), judge: flapJudge.name });
+  } catch (err) {
+    res.status(502).json({
+      error: err instanceof Error ? err.message : String(err),
+      latencyMs: Math.round(performance.now() - started),
+    });
   }
 });
 
