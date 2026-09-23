@@ -1,16 +1,21 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import { useChat } from "./hooks/useChat";
+import { useChat, type Provider } from "./hooks/useChat";
 import { ApprovalCard } from "./components/ApprovalCard";
 import { MessageBubble } from "./components/MessageBubble";
 
 const ALL_TOOLS = ["Bash", "Read", "Write", "Edit", "Glob", "Grep", "WebFetch"];
 
-const PROVIDER_PRESETS = [
-  { label: "Anthropic", baseURL: "", models: ["claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5"] },
-  { label: "OpenAI", baseURL: "https://api.openai.com/v1", models: ["gpt-4o", "gpt-4o-mini", "o3-mini"] },
-  { label: "DeepSeek", baseURL: "https://api.deepseek.com/v1", models: ["deepseek-chat", "deepseek-reasoner"] },
-  { label: "Groq", baseURL: "https://api.groq.com/openai/v1", models: ["llama-3.3-70b-versatile", "mixtral-8x7b-32768"] },
-  { label: "OpenRouter", baseURL: "https://openrouter.ai/api/v1", models: ["anthropic/claude-opus-5", "openai/gpt-4o", "google/gemini-2.0-flash-001"] },
+const PROVIDER_PRESETS: Array<{ label: string; provider: Provider; baseURL: string; models: string[] }> = [
+  { label: "Anthropic", provider: "anthropic", baseURL: "", models: ["claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5"] },
+  { label: "OpenAI", provider: "openai", baseURL: "https://api.openai.com/v1", models: ["gpt-4o", "gpt-4o-mini", "o3-mini"] },
+  { label: "DeepSeek", provider: "openai", baseURL: "https://api.deepseek.com/v1", models: ["deepseek-chat", "deepseek-reasoner"] },
+  { label: "Groq", provider: "openai", baseURL: "https://api.groq.com/openai/v1", models: ["llama-3.3-70b-versatile", "mixtral-8x7b-32768"] },
+  { label: "OpenRouter", provider: "openai", baseURL: "https://openrouter.ai/api/v1", models: ["anthropic/claude-opus-5", "openai/gpt-4o", "google/gemini-2.0-flash-001"] },
+];
+
+const API_FORMATS: Array<{ value: Provider; label: string }> = [
+  { value: "anthropic", label: "Anthropic Messages" },
+  { value: "openai", label: "OpenAI-compatible" },
 ];
 
 const QUICK_PROMPTS = [
@@ -23,6 +28,13 @@ const QUICK_PROMPTS = [
 export default function App() {
   const [apiKey, setApiKey] = useState(() => localStorage.getItem("apiKey") ?? "");
   const [baseURL, setBaseURL] = useState(() => localStorage.getItem("baseURL") ?? "");
+  // Settings saved before this was a choice imply it the way the presets do:
+  // a base URL meant an OpenAI-compatible endpoint.
+  const [provider, setProvider] = useState<Provider>(() => {
+    const saved = localStorage.getItem("provider");
+    if (saved === "anthropic" || saved === "openai") return saved;
+    return localStorage.getItem("baseURL") ? "openai" : "anthropic";
+  });
   const [model, setModel] = useState(() => localStorage.getItem("model") ?? "claude-opus-5");
   const [input, setInput] = useState("");
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -30,7 +42,7 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [hasApiKey, setHasApiKey] = useState(false);
 
-  const { state, send, stop, clear, respond } = useChat(apiKey, baseURL, model, enabledTools);
+  const { state, send, stop, clear, respond } = useChat(apiKey, baseURL, provider, model, enabledTools);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -50,6 +62,10 @@ export default function App() {
     if (baseURL) localStorage.setItem("baseURL", baseURL);
     else localStorage.removeItem("baseURL");
   }, [baseURL]);
+
+  useEffect(() => {
+    localStorage.setItem("provider", provider);
+  }, [provider]);
 
   useEffect(() => {
     localStorage.setItem("model", model);
@@ -203,25 +219,16 @@ export default function App() {
               <div style={labelStyle}>Provider</div>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
                 {PROVIDER_PRESETS.map(p => {
-                  const active = baseURL === p.baseURL;
+                  const active = baseURL === p.baseURL && provider === p.provider;
                   return (
                     <button
                       key={p.label}
                       onClick={() => {
                         setBaseURL(p.baseURL);
+                        setProvider(p.provider);
                         setModel(p.models[0]!);
                       }}
-                      style={{
-                        padding: "4px 12px",
-                        borderRadius: 20,
-                        fontSize: 12,
-                        fontWeight: 500,
-                        border: `1px solid ${active ? "var(--accent)" : "var(--border)"}`,
-                        background: active ? "var(--accent-soft)" : "transparent",
-                        color: active ? "var(--accent)" : "var(--text-2)",
-                        cursor: "pointer",
-                        transition: "all 0.12s",
-                      }}
+                      style={pillStyle(active)}
                     >
                       {p.label}
                     </button>
@@ -250,6 +257,18 @@ export default function App() {
                   placeholder="https://api.openai.com/v1"
                   style={{ ...textInputStyle, width: 260, fontSize: 12 }}
                 />
+              </div>
+              <div>
+                {/* For a custom base URL: MiniMax, a local Ollama and others
+                    serve both formats, and the URL alone does not say which. */}
+                <div style={labelStyle}>API format</div>
+                <div style={{ display: "flex", gap: 6, height: 32, alignItems: "center" }}>
+                  {API_FORMATS.map(f => (
+                    <button key={f.value} onClick={() => setProvider(f.value)} style={pillStyle(provider === f.value)}>
+                      {f.label}
+                    </button>
+                  ))}
+                </div>
               </div>
               <div>
                 <div style={labelStyle}>Model</div>
@@ -483,6 +502,20 @@ const selectStyle: React.CSSProperties = {
   cursor: "pointer",
   outline: "none",
 };
+
+function pillStyle(active: boolean): React.CSSProperties {
+  return {
+    padding: "4px 12px",
+    borderRadius: 20,
+    fontSize: 12,
+    fontWeight: 500,
+    border: `1px solid ${active ? "var(--accent)" : "var(--border)"}`,
+    background: active ? "var(--accent-soft)" : "transparent",
+    color: active ? "var(--accent)" : "var(--text-2)",
+    cursor: "pointer",
+    transition: "all 0.12s",
+  };
+}
 
 const labelStyle: React.CSSProperties = {
   fontSize: 11,

@@ -84,6 +84,12 @@ The server runs tools on this machine and has no login, so it only answers this 
 it listens on `127.0.0.1`, and refuses any request whose `Host` or `Origin` is not a
 loopback address — another website's page, or one reached by DNS rebinding.
 
+Beyond that the server is only a transport. Each chat message is one `Agent` run: its
+events go out as SSE, its permission prompts come back as `POST /api/permission`, and
+Stop or closing the tab aborts it. Which API it calls is the browser's choice — the
+provider presets set it, and for a custom base URL so does *API format* in Settings,
+since MiniMax or a local Ollama serve both and the URL does not say which.
+
 ![A safe command cleared without a prompt](docs/gate-auto-approved.png)
 
 `wc -l src/agent.ts` scored 0.074 and ran — the green pill is the only trace, because
@@ -371,6 +377,8 @@ ANTHROPIC_API_KEY=… \
 npm run cli -- --model their-model-id
 ```
 
+In the web UI, the same thing is a Base URL plus *Anthropic Messages* under API format.
+
 ### Status
 
 The tool layer, permission rules, session round-trips and cost maths are covered by the
@@ -396,7 +404,9 @@ them means standing that up first.
 
 The live path — streaming, the agentic loop, tool calls, and the permission round-trip
 under piped input — has been exercised end to end against an Anthropic-compatible
-endpoint (MiniMax M2), but it is not in CI: it costs money and needs a key. Cost figures
+endpoint (MiniMax M2), and again after the web server moved onto `Agent` — CLI and
+browser, through both clients — against a local Ollama. It is not in CI: it needs a live
+model. Cost figures
 come from the table in `src/utils/cost.ts`, which prices Anthropic models, so they are
 meaningless against a third-party endpoint.
 

@@ -1,5 +1,8 @@
 import { useState, useRef, useCallback } from "react";
 
+/** Which API the settings speak: the Messages API, or Chat Completions. */
+export type Provider = "anthropic" | "openai";
+
 /** What the risk gate decided about a tool call, when it decided. */
 export interface GateVerdict {
   action: "allow" | "ask" | "deny";
@@ -25,6 +28,8 @@ export interface ToolCall {
 /** A tool call parked on the server, waiting for the user to decide. */
 export interface PendingApproval {
   id: string;
+  /** The tool call this approval is for — calls in a batch run concurrently. */
+  toolUseId?: string | undefined;
   toolName: string;
   input: Record<string, unknown>;
   description: string;
@@ -47,11 +52,17 @@ export interface ChatState {
   isLoading: boolean;
   sessionId: string | null;
   error: string | null;
-  /** At most one at a time: the server asks about tool calls sequentially. */
+  /** At most one at a time: the server queues its questions. */
   pendingApproval: PendingApproval | null;
 }
 
-export function useChat(apiKey: string, baseURL: string, model: string, allowedTools: string[]) {
+export function useChat(
+  apiKey: string,
+  baseURL: string,
+  provider: Provider,
+  model: string,
+  allowedTools: string[],
+) {
   const [state, setState] = useState<ChatState>({
     messages: [],
     isLoading: false,
@@ -59,12 +70,6 @@ export function useChat(apiKey: string, baseURL: string, model: string, allowedT
     error: null,
     pendingApproval: null,
   });
-  /**
-   * The gate's last verdict, held until the matching permission_request
-   * arrives. The server sends the verdict first, so a deferral can show the
-   * probability it was deferred on rather than an unexplained prompt.
-   */
-  const lastVerdictRef = useRef<GateVerdict | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
   const send = useCallback(
@@ -99,6 +104,7 @@ export function useChat(apiKey: string, baseURL: string, model: string, allowedT
             sessionId: state.sessionId,
             apiKey: apiKey || undefined,
             baseURL: baseURL || undefined,
+            provider,
             model,
             allowedTools: allowedTools.length ? allowedTools : undefined,
           }),
@@ -169,7 +175,6 @@ export function useChat(apiKey: string, baseURL: string, model: string, allowedT
                     reason: data["reason"] as string,
                     judge: data["judge"] as string,
                   };
-                  lastVerdictRef.current = verdict;
                   last.toolCalls = (last.toolCalls ?? []).map((tc) =>
                     tc.id === (data["id"] as string) ? { ...tc, gate: verdict } : tc,
                   );
@@ -183,10 +188,14 @@ export function useChat(apiKey: string, baseURL: string, model: string, allowedT
                     messages: msgs,
                     pendingApproval: {
                       id: data["id"] as string,
+                      toolUseId: data["toolUseId"] as string | undefined,
                       toolName: data["toolName"] as string,
                       input: data["input"] as Record<string, unknown>,
                       description: data["description"] as string,
-                      gate: lastVerdictRef.current ?? undefined,
+                      // Sent with the request itself, so a deferral shows the
+                      // probability it was deferred on — even when several
+                      // calls were judged at once.
+                      gate: data["gate"] as GateVerdict | undefined,
                     },
                   };
                 }
@@ -205,8 +214,11 @@ export function useChat(apiKey: string, baseURL: string, model: string, allowedT
                   );
                   msgs[msgs.length - 1] = last;
                   // The prompt for this call cannot still be open once the
-                  // call has finished — it was answered, or it timed out.
-                  return s.pendingApproval ? { ...s, messages: msgs, pendingApproval: null } : { ...s, messages: msgs };
+                  // call has finished — it was answered, or it timed out. A
+                  // different call finishing says nothing about it.
+                  return s.pendingApproval?.toolUseId === data["id"]
+                    ? { ...s, messages: msgs, pendingApproval: null }
+                    : { ...s, messages: msgs };
                 }
 
                 case "done":
@@ -243,7 +255,7 @@ export function useChat(apiKey: string, baseURL: string, model: string, allowedT
         }));
       }
     },
-    [state.isLoading, state.sessionId, apiKey, baseURL, model, allowedTools]
+    [state.isLoading, state.sessionId, apiKey, baseURL, provider, model, allowedTools]
   );
 
   /**
@@ -263,7 +275,7 @@ export function useChat(apiKey: string, baseURL: string, model: string, allowedT
             ? {
                 ...m,
                 toolCalls: (m.toolCalls ?? []).map((tc) =>
-                  tc.status === "running" && decision.endsWith("allow")
+                  tc.id === s.pendingApproval?.toolUseId && decision.endsWith("allow")
                     ? { ...tc, approvedBy: "user" as const }
                     : tc,
                 ),
@@ -291,6 +303,9 @@ export function useChat(apiKey: string, baseURL: string, model: string, allowedT
     setState((s) => ({
       ...s,
       isLoading: false,
+      // Stopping denies whatever was parked on the server; a card left up
+      // would offer buttons that can only 404.
+      pendingApproval: null,
       messages: s.messages.map((m, i) =>
         i === s.messages.length - 1 ? { ...m, isStreaming: false } : m
       ),
