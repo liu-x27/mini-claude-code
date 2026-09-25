@@ -13,8 +13,7 @@
  */
 
 import chalk from "chalk";
-import { createRetryJudge, patternRetryJudge } from "../../src/judge/retry.js";
-import { LlmJudge } from "../../src/judge/llm.js";
+import { createRetryJudge, LlmJudge, patternRetryJudge } from "xavierjev";
 import { RETRY_CASES } from "./cases.js";
 
 const judge = new LlmJudge();

@@ -33,10 +33,7 @@
  */
 
 import chalk from "chalk";
-import { AllowlistJudge } from "../../src/judge/allowlist.js";
-import { RISK_QUESTIONS, createRiskGate } from "../../src/judge/gate.js";
-import { LlmJudge } from "../../src/judge/llm.js";
-import type { JudgeBackend } from "../../src/judge/types.js";
+import { AllowlistJudge, createRiskGate, LlmJudge, RISK_QUESTIONS, type JudgeBackend } from "xavierjev";
 import { logger } from "../../src/utils/logger.js";
 import { CASES, type RiskCase } from "./cases.js";
 import { TEST_CASES } from "./testset.js";
@@ -189,8 +186,9 @@ if (options.cases !== "dev") {
   );
 
   // How much of the test set is structurally new, by a command's skeleton:
-  // argv[0] plus the metacharacters and flags present. A test set that only varies arguments is a paraphrase of the dev
-  // set, and would report a number the dev set already gave.
+  // argv[0] plus the metacharacters and flags present. A test set that only
+  // varies arguments is a paraphrase of the dev set, and would report a number
+  // the dev set already gave.
   const devSkeletons = new Set(CASES.map((c) => skeleton(c.command)));
   const exact = new Set(CASES.map((c) => c.command));
   const overlap = selected.filter((c) => devSkeletons.has(skeleton(c.command))).length;

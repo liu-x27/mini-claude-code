@@ -22,9 +22,7 @@
 
 import chalk from "chalk";
 import { writeFileSync } from "node:fs";
-import { createRiskGate } from "../../src/judge/gate.js";
-import { LlmJudge } from "../../src/judge/llm.js";
-import type { RubricLevel } from "../../src/judge/types.js";
+import { createRiskGate, LlmJudge, type RubricLevel } from "xavierjev";
 import { logger } from "../../src/utils/logger.js";
 import { CASES } from "../risk-gate/cases.js";
 

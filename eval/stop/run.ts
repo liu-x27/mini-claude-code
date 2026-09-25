@@ -12,8 +12,7 @@
  */
 
 import chalk from "chalk";
-import { LlmJudge } from "../../src/judge/llm.js";
-import { createRepeatStopJudge, createStopJudge } from "../../src/judge/stop.js";
+import { createRepeatStopJudge, createStopJudge, LlmJudge } from "xavierjev";
 import type { RunTrace, StopJudge } from "../../src/types.js";
 import { logger } from "../../src/utils/logger.js";
 import { STOP_CASES, type StopCase, type StopKind } from "./cases.js";

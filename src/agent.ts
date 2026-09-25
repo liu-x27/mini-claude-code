@@ -517,8 +517,8 @@ function chunk<T>(arr: T[], size: number): T[][] {
 }
 
 /**
- * A judge's verdict, or `fallback` if the judge throws. The judges shipped in
- * src/judge never throw, but a caller's own can, and a judge that fails has
+ * A judge's verdict, or `fallback` if the judge throws. The judges xavierjev
+ * builds never throw, but a caller's own can, and a judge that fails has
  * to mean "carry on as if there were no judge" — not take the run down.
  */
 async function settle<T>(judge: () => Promise<T>, fallback: (reason: string) => T): Promise<T> {

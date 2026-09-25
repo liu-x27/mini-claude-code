@@ -672,7 +672,9 @@ are spent; the third has been read once.
 The framework came first — agent loop, tools, permissions, sessions, web UI — then the
 CLI and the injectable permission prompt, then the decision layer: `src/judge/`, the
 gate, the router, the labelled sets under `eval/`, and the approval path the injectable
-prompt had been waiting for. Its working record, every threshold reasoned wrong before
+prompt had been waiting for. `src/judge/` has since moved into its own repository,
+[XavierJev](https://github.com/liu-x27/XavierJev), and comes back as the `xavierjev`
+dependency. Its working record, every threshold reasoned wrong before
 being measured right and every wording refused, is in
 [docs/measurements.md](docs/measurements.md). This file is the summary.
 

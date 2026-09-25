@@ -1,3 +1,5 @@
+import { setLogger as setJudgeLogger } from "xavierjev";
+
 import chalk from "chalk";
 
 export type LogLevel = "debug" | "info" | "warn" | "error" | "silent";
@@ -72,3 +74,8 @@ class Logger {
 
 /** Singleton logger — import and use directly */
 export const logger = new Logger((process.env.AGENT_LOG_LEVEL as LogLevel | undefined) ?? "info");
+
+// The decision layer comes from xavierjev and logs to the console unless its
+// host hands it a logger. This one keeps its warnings with the framework's,
+// and keeps setLevel() quieting both.
+setJudgeLogger(logger);

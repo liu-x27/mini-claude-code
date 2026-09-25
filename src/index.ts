@@ -61,7 +61,7 @@ export {
   RISK_QUESTIONS,
   ROUTING_QUESTION,
   UNKNOWN_PROBABILITY,
-} from "./judge/index.js";
+} from "xavierjev";
 export type {
   JudgeBackend,
   JudgeCapability,
@@ -71,7 +71,7 @@ export type {
   NoulAnswer,
   NoulQuestion,
   RiskGateOptions,
-} from "./judge/index.js";
+} from "xavierjev";
 
 // Utils
 export { logger } from "./utils/logger.js";

@@ -14,13 +14,23 @@ import { FileEditTool } from "../src/tools/file-edit.js";
 import { GlobTool } from "../src/tools/glob.js";
 import { GrepTool } from "../src/tools/grep.js";
 import { PermissionSystem, PermissionPresets } from "../src/permissions/index.js";
-import { AllowlistJudge } from "../src/judge/allowlist.js";
-import { createRiskGate, RISK_QUESTIONS } from "../src/judge/gate.js";
-import { createModelRouter } from "../src/judge/router.js";
-import { createRetryJudge, patternRetryJudge } from "../src/judge/retry.js";
-import { anyStopJudge, createRepeatStopJudge, createStopJudge } from "../src/judge/stop.js";
-import { UNKNOWN_PROBABILITY } from "../src/judge/types.js";
-import type { JudgeBackend, JudgeState, NoulAnswer, NoulQuestion } from "../src/judge/types.js";
+import {
+  AllowlistJudge,
+  anyStopJudge,
+  createModelRouter,
+  createRepeatStopJudge,
+  createRetryJudge,
+  createRiskGate,
+  createStopJudge,
+  LlmJudge,
+  patternRetryJudge,
+  RISK_QUESTIONS,
+  UNKNOWN_PROBABILITY,
+  type JudgeBackend,
+  type JudgeState,
+  type NoulAnswer,
+  type NoulQuestion,
+} from "xavierjev";
 import { SessionManager } from "../src/session/manager.js";
 import { estimateCost, formatCost } from "../src/utils/cost.js";
 import type {
@@ -42,7 +52,6 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import * as http from "node:http";
 import chalk from "chalk";
-import { LlmJudge } from "../src/judge/llm.js";
 import {
   type Board,
   isBoard,

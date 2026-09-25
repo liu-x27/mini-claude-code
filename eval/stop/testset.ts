@@ -1,8 +1,8 @@
 /**
  * Held-out runs for the stop judges.
  *
- * Written after the wording and threshold in `src/judge/stop.ts` were chosen
- * on `cases.ts`, and not used to choose anything. Same kinds, new situations.
+ * Written after the wording and threshold in the judge's `stop.ts` (now in
+ * xavierjev) were chosen on `cases.ts`, and not used to choose anything. Same kinds, new situations.
  * Scored with `npm run eval:stop -- --cases test`.
  *
  * ## Read log

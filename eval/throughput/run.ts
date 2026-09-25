@@ -17,7 +17,7 @@
 
 import chalk from "chalk";
 import { readFileSync, writeFileSync } from "node:fs";
-import { LlmJudge } from "../../src/judge/llm.js";
+import { LlmJudge } from "xavierjev";
 import { type Board, newBoard, ruleMove, seededRandom, snakeQuestion, step } from "../../shared/snake.js";
 
 const arg = (name: string, fallback: string): string => {

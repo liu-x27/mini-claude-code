@@ -22,10 +22,7 @@
  */
 
 import chalk from "chalk";
-import { AllowlistJudge } from "../../src/judge/allowlist.js";
-import { LlmJudge } from "../../src/judge/llm.js";
-import { createModelRouter, ROUTING_QUESTION } from "../../src/judge/router.js";
-import type { JudgeBackend } from "../../src/judge/types.js";
+import { AllowlistJudge, createModelRouter, LlmJudge, ROUTING_QUESTION, type JudgeBackend } from "xavierjev";
 import type { ModelId } from "../../src/types.js";
 import { estimateCost, formatCost } from "../../src/utils/cost.js";
 import { logger } from "../../src/utils/logger.js";

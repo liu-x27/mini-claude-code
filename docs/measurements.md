@@ -1,7 +1,8 @@
 # Measuring the decision layer
 
-The working record behind two features in `src/judge/` — the risk gate and the model
-router. It lives outside the README because it is long, and because most of it is the
+The working record behind two features of the decision layer — the risk gate and the
+model router. The layer was `src/judge/` here and is now the
+[xavierjev](https://github.com/liu-x27/XavierJev) package, which keeps this record going. It lives outside the README because it is long, and because most of it is the
 story of being wrong about something before measuring it.
 
 The README says what the two of them do and what they score. This is how those numbers
