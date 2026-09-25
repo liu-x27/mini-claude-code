@@ -912,7 +912,14 @@ async function fakeLogprobEndpoint(top: Array<{ token: string; p: number }>) {
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
   const { port } = server.address() as { port: number };
   const judge = new LlmJudge({ apiKey: "test", baseURL: `http://127.0.0.1:${port}/v1`, model: "fake" });
-  return { judge, bodies, close: () => new Promise<void>((r) => server.close(() => r())) };
+  // closeAllConnections: the judge's client keeps its connection alive, and a socket still open
+  // when the process exits trips a libuv assertion on Windows that turns a passing run into exit 127.
+  const close = () =>
+    new Promise<void>((r) => {
+      server.close(() => r());
+      server.closeAllConnections();
+    });
+  return { judge, bodies, close };
 }
 
 await checkAsync("choice()：一次前向读出每个选项的概率，按选项顺序归一，覆盖率单独给出", async () => {
@@ -1230,4 +1237,5 @@ if (failed === 0) {
 }
 console.log("─".repeat(50) + "\n");
 
-process.exit(failed > 0 ? 1 : 0);
+// exitCode rather than process.exit(): exiting with sockets still closing is what the assertion above is about.
+process.exitCode = failed > 0 ? 1 : 0;
