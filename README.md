@@ -387,8 +387,13 @@ what was left. It is a separate interface, `ChoiceBackend`, rather than a method
 It is the arena view of the web UI, at `/#arena`. Every move is one
 `POST /api/snake/move`; the server builds the question from the board, in
 `shared/snake.ts`, and asks the same judge the gate uses. The GIF plays at the speed it
-was recorded: about 27 moves a second, the judge's p50 28 ms, llama3.1:8b on a local
-Ollama.
+was recorded: about 25 moves a second, the judge's p50 30 ms, llama3.1:8b on a local
+Ollama. It is the page's fifth game, from when it passed 35 to its end at 43, boxed in
+with the board nearly full — the best of five; the four before it averaged 25.5, the five
+29.0. Each game starts from its own seed and the judge answers the same way each time, so
+the fifth game is the same game on every run. It was recorded on
+[XavierJev](https://github.com/liu-x27/XavierJev)'s copy of this arena, which has the same
+components, game and judge.
 
 The split is the gate's again. Whether a move is legal is not a judgement, so a rule
 removes the walls and the body before anything is asked, and the model chooses among
@@ -422,7 +427,15 @@ nothing that tick, the way a controller falls back to its no-op, and while a lat
 question is still being answered no new one is sent, so a slow judge misses several
 ticks in a row.
 
-![Flappy against a 30 ms budget, live against llama3.1:8b](docs/flappy-arena.gif)
+![Flappy against a 60 ms budget, live against llama3.1:8b](docs/flappy-arena.gif)
+
+Live, at 60 ms a tick: the page's first flight, from pipe 20. No tick missed, and it was
+still flying three minutes after the clip ends. The page's budget has to cover the round
+trip to the local server as well as the judge, so at 30 ms it does worse than the eval
+below: its answers came back at p95 36 ms, it missed 11.6% and 13.3% of ticks in two
+runs, and its flights averaged 10.0 and 16.0 pipes. The page times an answer by that
+round trip; it used to show the judge's share the server reports, which read as inside a
+budget that ticks were missing. Recorded, like the snake, on XavierJev's copy of the arena.
 
 `npm run eval:flappy`, llama3.1:8b on a local Ollama, one question per tick:
 
