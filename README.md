@@ -217,15 +217,23 @@ fixes shaped the API:
 way out is to answer `a` (always), which turns the permission system off for the rest of
 the session — the safety feature is the reason the safety feature gets disabled.
 
-`--gate` puts a decision layer in front of the prompt. It borrows its shape from
+`--gate` puts a decision layer in front of the prompt. The layer is the
+[xavierjev](https://github.com/liu-x27/XavierJev) package (v0.7.1 here), which grew out of
+this directory and is where it is measured now: the numbers below are the gate as it ships
+from there, and its README has what came after the split — a judge fine-tuned on one
+machine's commands, the 1,181 commands the gate cleared on real traffic each read by hand,
+and a startup self-check that will not let an unverified judge clear anything. It borrows its shape from
 "System One" decision models: state plus declared typed questions in, probabilities out,
 no prose. Routing, risk gating, retry and stop decisions in an agent loop all have that
 shape, and none of them need a paragraph of generated text. The whole backend interface
 is one method:
 
 ```ts
-noul(state, questions): Promise<{ id: string; probability: number }[]>
+noul(state, questions, { signal }?): Promise<{ id: string; probability: number }[]>
 ```
+
+The signal is aborted when a decision stops waiting, so a timed-out question does not keep
+the judge busy.
 
 Two constraints shape everything else.
 
@@ -258,7 +266,8 @@ user cannot see and correct, so a non-zero value fails the run.
 There are four sets. `cases.ts` (83) is the dev set — the question wordings, the
 threshold and the model were all chosen against it. `testset.ts` (125), `testset2.ts`
 (96) and `testset3.ts` (153) are held out, labelled before anything was shown to a
-judge, and each read once or twice with every read logged in its own docstring.
+judge, with every read logged in its own docstring — test 3 has been read six times by now,
+so its figures are weaker evidence than its first read was.
 
 Test 1 is left out of the table below: it was measured before two of the four questions
 were rewritten and while the allow-list was still the default, so its `llm` column
@@ -269,14 +278,18 @@ describes a configuration that no longer ships. It is in
 |---|---|---|---|---|
 | no gate | — | 0/41 · 0/42 | 0/53 · 0/43 | 0/77 · 0/76 |
 | `allowlist` — offline | 0.20 | 23/41 · **0/42** | 7/53 · **0/43** | 8/77 · **0/76** |
-| **`llm` llama3.1:8b — the default** | **0.20** | 36/41 · **0/42** | 26/53 · **1/43** | **26/77 · 0/76** |
+| `llm` llama3.1:8b, before xavierjev 0.3.0 | 0.20 | 36/41 · **0/42** | 26/53 · **1/43** | 26/77 · **0/76** |
+| **`llm` llama3.1:8b — the default, since 0.3.0** | **0.20** | 35/41 · **0/42** | — | **29/77 · 0/76** |
 
-Read the coverage row left to right: **88% on dev, 49% on test 2, 34% on test 3.**
+0.3.0 added one sentence to `outside-cwd` — reading, listing or searching files does not
+count — chosen on real traffic and confirmed on test 3; test 2 is spent and was not read for
+it. Read the coverage left to right: **85% on dev, 49% on test 2 before the change, 38% on
+test 3.**
 Coverage is substantially lower outside the set the threshold was chosen on. The more unfamiliar the
 commands, the less the gate clears — the right direction for something that fails closed,
 and a poor advertisement for the dev-set figure. So the honest summary of what ships is
-a third of safe commands cleared with no false allows on 153 commands it had never seen,
-not the 88% that chose the threshold.
+29 of 77 safe commands cleared, 38%, with no false allows on 153 commands it had never
+seen, not the 85% on the set that chose the threshold.
 
 Test 3's commands came from asking the agent's own model what it would run across a dozen
 realistic tasks, never mentioning safe, unsafe or any harm — only the labels are mine.

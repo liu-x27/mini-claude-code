@@ -14,6 +14,12 @@ Ordered by topic, which is not the order any of it happened in — so **read the
 below for what ships, and treat every section after it as a dated investigation.** Where
 a section describes a configuration that is no longer the default, it says so at the top.
 
+*This copy stops at the split, on 2026-09-25. Since then xavierjev 0.3.0 reworded
+`outside-cwd` (dev 35/41, test 3 29/77, both with no false allows) and later versions went a
+good deal further; the record that is kept current is
+[XavierJev's docs/measurements.md](https://github.com/liu-x27/XavierJev/blob/main/docs/measurements.md).
+What follows is as it stood at the split.*
+
 ---
 
 ## Where it stands now

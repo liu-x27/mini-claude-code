@@ -209,9 +209,10 @@ export class Agent {
 
         // Every tool_use has its result by now, so stopping here leaves a
         // transcript that resumes like any other.
-        if (this.stopJudge && !signal?.aborted) {
+        const stopJudge = this.stopJudge;
+        if (stopJudge && !signal?.aborted) {
           const verdict = await settle(
-            () => this.stopJudge!({ prompt, turn, recent: this.trace(toolCalls) }),
+            () => stopJudge({ prompt, turn, recent: this.trace(toolCalls) }),
             (reason) => ({ stop: false, probability: undefined, reason }),
           );
           await this.emit({ type: "stop_check", turn, verdict });
@@ -370,10 +371,11 @@ export class Agent {
 
     // One more try for a call that changes nothing, if the judge calls the
     // failure transient. Never for a dangerous tool, never twice.
-    if (toolResult.type === "error" && !tool.dangerous && this.retryJudge && !signal?.aborted) {
+    const retryJudge = this.retryJudge;
+    if (toolResult.type === "error" && !tool.dangerous && retryJudge && !signal?.aborted) {
       const error = toolResult.message;
       const verdict = await settle(
-        () => this.retryJudge!({ toolName: tool.name, summary: tool.summarize(input), error }),
+        () => retryJudge({ toolName: tool.name, summary: tool.summarize(input), error }),
         (reason) => ({ retry: false, probability: undefined, reason }),
       );
       await this.emit({ type: "tool_retry", toolUseId, toolName: tool.name, error, verdict });
