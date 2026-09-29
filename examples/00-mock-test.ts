@@ -1612,6 +1612,32 @@ await checkAsync("system 里没有日期和工作目录；它们只在变化时�
   if (systems[0]!.includes(scratch) || /\d{4}-\d{2}-\d{2}/.test(systems[0]!)) throw new Error("system 里还有目录或日期");
 });
 
+await checkAsync("AGENTS.md：新会话读入从仓库根到工作目录的说明，近的在后；续跑不重复；可关", async () => {
+  const root = path.join(scratch, "repo");
+  const sub = path.join(root, "pkg", "app");
+  await fs.mkdir(path.join(root, ".git"), { recursive: true });
+  await fs.mkdir(sub, { recursive: true });
+  await fs.writeFile(path.join(root, "AGENTS.md"), "ROOT RULE: use pnpm.");
+  await fs.writeFile(path.join(sub, "AGENTS.md"), "SUB RULE: tests live in __tests__.");
+  await fs.writeFile(path.join(sub, "CLAUDE.md"), "SUB RULE: tests live in __tests__."); // 和 AGENTS.md 相同，只算一次
+  const dir = path.join(scratch, "instr-sessions");
+
+  const c1 = new ScriptedClient([said("ok")]);
+  const r1 = await scriptedAgent(c1, { persistSessions: true, sessionDir: dir, cwd: sub }).agent.run("go");
+  const first = JSON.stringify(c1.seen[0]!.at(-1)!.content);
+  const [iRoot, iSub] = [first.indexOf("ROOT RULE"), first.indexOf("SUB RULE")];
+  if (iRoot < 0 || iSub < 0 || iRoot > iSub) throw new Error(`说明缺失或顺序不对: ${first.slice(0, 300)}`);
+  if (first.split("SUB RULE").length !== 2) throw new Error("相同内容的 CLAUDE.md 不该再算一次");
+
+  const c2 = new ScriptedClient([said("ok")]);
+  await scriptedAgent(c2, { persistSessions: true, sessionDir: dir, cwd: sub, resumeSessionId: r1.sessionId }).agent.run("again");
+  if (JSON.stringify(c2.seen[0]!.at(-1)!.content).includes("RULE")) throw new Error("续跑不该再附一遍");
+
+  const c3 = new ScriptedClient([said("ok")]);
+  await scriptedAgent(c3, { cwd: sub, projectInstructions: false }).agent.run("go");
+  if (JSON.stringify(c3.seen[0]).includes("RULE")) throw new Error("关掉之后还读了");
+});
+
 await checkAsync("effort：设了才发 output_config.effort，没设就不发", async () => {
   const base: ModelRequest = {
     model: "claude-opus-5-5",

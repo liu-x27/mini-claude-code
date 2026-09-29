@@ -230,6 +230,13 @@ export interface AgentConfig {
   /** Enable prompt caching (default: true) */
   enableCaching?: boolean;
 
+  /**
+   * Read AGENTS.md / CLAUDE.md from the repository root down to `cwd` (and
+   * `~/.agent-app/AGENTS.md`) into the first message of a new session.
+   * Default: true.
+   */
+  projectInstructions?: boolean;
+
   /** Stream output tokens as they arrive */
   stream?: boolean;
 

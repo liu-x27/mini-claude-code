@@ -43,6 +43,7 @@ export { WebFetchTool } from "./tools/web-fetch.js";
 
 // Session
 export { SessionManager } from "./session/manager.js";
+export { loadProjectInstructions } from "./context/instructions.js";
 
 // Permissions
 export {

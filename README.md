@@ -206,7 +206,10 @@ written after every turn, and atomically, rather than once at the end: a run who
 call failed on its fifth turn used to leave nothing behind, though the first four had
 already changed the disk. A run that ends early — the API failed, the caller aborted,
 the process died mid tool call — records why, and the next run says so to the model
-before its prompt.
+before its prompt. A new session starts with the project's instructions: AGENTS.md,
+and CLAUDE.md where it says something else, from the repository root down to the working
+directory, plus `~/.agent-app/AGENTS.md`, up to 32 KiB (`projectInstructions: false`
+turns it off).
 
 ### Three things the REPL had to solve
 

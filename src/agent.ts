@@ -3,6 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type Anthropic from "@anthropic-ai/sdk";
 import chalk from "chalk";
+import { loadProjectInstructions } from "./context/instructions.js";
 import { AnthropicClient } from "./model/anthropic.js";
 import type { ModelClient, ModelDelta, ModelResponse } from "./model/types.js";
 import { PermissionSystem } from "./permissions/index.js";
@@ -98,6 +99,7 @@ export class Agent {
       sessionDir: config.sessionDir ?? "",
       subagents: config.subagents ?? {},
       enableCaching: config.enableCaching ?? true,
+      projectInstructions: config.projectInstructions ?? true,
       stream: config.stream ?? false,
     };
 
@@ -140,6 +142,10 @@ export class Agent {
 
     const messages: ConversationMessage[] = [...session.messages];
     const notes: string[] = [];
+    if (session.messages.length === 0 && this.config.projectInstructions) {
+      const instructions = await loadProjectInstructions(this.config.cwd);
+      if (instructions) notes.push(instructions);
+    }
     const environment = this.environmentLine();
     if (session.metadata.environment !== environment) notes.push(`[Environment: ${environment}]`);
     if (session.metadata.interrupted) {
