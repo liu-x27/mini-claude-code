@@ -137,6 +137,29 @@ function Reply({
         </div>
       )}
 
+      {msg.notes && msg.notes.length > 0 && (
+        <div className="msg-notes">
+          {msg.notes.map((note, i) => (
+            // biome-ignore lint/suspicious/noArrayIndexKey: notes are only ever appended
+            <p key={i}>{note}</p>
+          ))}
+        </div>
+      )}
+
+      {msg.todos && msg.todos.length > 0 && (
+        <ul className="msg-plan" aria-label="Task list">
+          {msg.todos.map((t, i) => (
+            // biome-ignore lint/suspicious/noArrayIndexKey: the list is rewritten whole each time
+            <li key={i} data-status={t.status}>
+              <span className="msg-plan-mark" aria-hidden="true">
+                {t.status === "completed" ? "✓" : t.status === "in_progress" ? "▶" : "○"}
+              </span>
+              {t.content}
+            </li>
+          ))}
+        </ul>
+      )}
+
       {msg.error ? (
         <div className="msg-error" role="alert">
           <Icon name="alert" size={15} />

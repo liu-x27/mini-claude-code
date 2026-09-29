@@ -482,6 +482,16 @@ function forward(event: AgentEvent, send: (event: string, data: unknown) => void
     case "todos":
       send("todos", { todos: event.todos });
       break;
+    case "subagent":
+      // What a subagent runs, one line each; its text and deltas stay its own.
+      if (event.event.type === "tool_start") {
+        send("subagent_tool", {
+          subagent: event.subagent,
+          toolName: event.event.toolName,
+          summary: JSON.stringify(event.event.input).slice(0, 120),
+        });
+      }
+      break;
     case "compacted":
       send("compacted", { turn: event.turn, promptTokens: event.promptTokens, transcript: event.transcript });
       break;

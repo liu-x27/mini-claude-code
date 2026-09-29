@@ -51,6 +51,10 @@ export interface Message {
   /** `cost` is null when the server has no price for the model. */
   usage?: { inputTokens: number; outputTokens: number; cost: number | null };
   isStreaming?: boolean;
+  /** The model's task list, as TodoWrite last wrote it. */
+  todos?: Array<{ content: string; status: "pending" | "in_progress" | "completed" }>;
+  /** What the loop did around the reply: a compaction, a subagent's tool calls. */
+  notes?: string[];
   /** Where this turn's text began, so a retried turn can drop what its cut-off attempt streamed. */
   turnStart?: number;
   thinkingStart?: number;
@@ -165,6 +169,24 @@ export function useChat(
 
                 case "thinking_delta":
                   last.thinking = (last.thinking ?? "") + (data["delta"] as string);
+                  break;
+
+                case "todos":
+                  last.todos = data["todos"] as NonNullable<Message["todos"]>;
+                  break;
+
+                case "compacted":
+                  last.notes = [
+                    ...(last.notes ?? []),
+                    `Compacted the conversation at ${Number(data["promptTokens"]).toLocaleString()} prompt tokens; the full transcript is kept.`,
+                  ];
+                  break;
+
+                case "subagent_tool":
+                  last.notes = [
+                    ...(last.notes ?? []),
+                    `↳ ${data["subagent"] as string} subagent: ${data["toolName"] as string} — ${data["summary"] as string}`,
+                  ];
                   break;
 
                 case "turn_start":

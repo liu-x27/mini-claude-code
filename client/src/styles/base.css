@@ -247,6 +247,44 @@ kbd {
   word-break: break-word;
 }
 
+/* the task list, and notes on what the loop did around a reply */
+
+.msg-plan {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 10px 14px;
+  list-style: none;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  & li {
+    display: flex;
+    gap: 8px;
+    color: var(--dim);
+  }
+  & li[data-status="in_progress"] {
+    color: var(--text);
+    font-weight: 600;
+  }
+  & li[data-status="completed"] {
+    color: var(--faint);
+    text-decoration: line-through;
+  }
+}
+.msg-plan-mark {
+  flex: none;
+  width: 1em;
+  color: var(--accent);
+}
+.msg-notes {
+  display: grid;
+  gap: 2px;
+  font-size: 12.5px;
+  color: var(--faint);
+  word-break: break-word;
+}
+
 /* prose */
 
 .prose {
