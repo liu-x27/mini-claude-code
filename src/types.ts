@@ -162,6 +162,10 @@ export interface SessionMetadata {
    * conversation when they change.
    */
   environment?: string;
+  /** Prompt tokens of the last model call, which decides whether the next run starts by compacting. */
+  contextTokens?: number;
+  /** How many times this session has been compacted. */
+  compactions?: number;
 }
 
 export interface Session {
@@ -236,6 +240,14 @@ export interface AgentConfig {
    * Default: true.
    */
   projectInstructions?: boolean;
+
+  /**
+   * Compact the conversation when a model call's prompt reaches this many
+   * tokens: the model summarises it, the full transcript is archived, and
+   * the next call starts from the summary. Default: 80% of the model's
+   * context window, at most 150K. `false` never compacts.
+   */
+  compactAt?: number | false;
 
   /** Stream output tokens as they arrive */
   stream?: boolean;
@@ -353,6 +365,8 @@ export type AgentEvent =
   | { type: "tool_retry"; toolUseId: string; toolName: string; error: string; verdict: RetryVerdict }
   /** The reply was cut off by max_tokens in the middle of a tool call; the turn is asked again with more room. */
   | { type: "turn_retry"; turn: number; reason: string; maxTokens: number }
+  /** The history was replaced by a summary; `transcript` is where the full one was archived. */
+  | { type: "compacted"; turn: number; promptTokens: number; transcript: string | undefined }
   | { type: "stop_check"; turn: number; verdict: StopVerdict }
   | { type: "turn_start"; turn: number }
   | { type: "turn_end"; turn: number; usage: AgentUsage }

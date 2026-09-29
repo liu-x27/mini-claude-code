@@ -17,6 +17,8 @@ export interface ModelRequest {
   tools: Tool[];
   maxTokens: number;
   thinking: ThinkingConfig;
+  /** "none" asks for text only while still declaring the tools, as a compaction does. Default "auto". */
+  toolChoice?: "auto" | "none" | undefined;
   /** Sent only when set; see `AgentConfig.effort`. */
   effort?: EffortLevel | undefined;
   enableCaching: boolean;

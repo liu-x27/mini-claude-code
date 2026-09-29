@@ -151,6 +151,7 @@ console.log(result.text, result.usage.estimatedCostUsd);
 | `--gate-threshold <n>` | auto-allow below this P; default 0.20, model-specific |
 | `--cheap-model <id>` | route prompts between this and `--model`; needs `--gate` |
 | `--effort <level>` | `low` … `max`, sent as `output_config.effort`; unset, the model's own default |
+| `--compact-at <n>` | compact once a prompt reaches n tokens, or `off`; default 80% of the window, ≤150K |
 
 In the REPL: `/help` `/tools` `/cost` `/sessions` `/resume <id>` `/new` `/model [id]`
 `/permissions <preset>` `/gate [backend]` `/cwd [path]` `/exit`. Ctrl+C stops the run in
@@ -209,7 +210,14 @@ the process died mid tool call — records why, and the next run says so to the 
 before its prompt. A new session starts with the project's instructions: AGENTS.md,
 and CLAUDE.md where it says something else, from the repository root down to the working
 directory, plus `~/.agent-app/AGENTS.md`, up to 32 KiB (`projectInstructions: false`
-turns it off).
+turns it off). When a model call's prompt reaches `compactAt` tokens — by default 80%
+of the model's context window and at most 150K (`AGENT_CONTEXT_WINDOW` for a model the
+harness does not know, `--compact-at` in the CLI) — the loop asks the same model for a
+sectioned summary, archives the full transcript beside the sessions, and continues from
+the summary alone, quoting the request in progress. That is the shape Anthropic recommends
+for client-side compaction; keeping the last turns verbatim beside a summary breaks on
+models that bind thinking blocks to the prompt they came from. An endpoint that ignores
+`tool_choice: "none"` and calls a tool instead is asked again over a plain-text transcript.
 
 ### Three things the REPL had to solve
 

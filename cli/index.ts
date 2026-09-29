@@ -179,6 +179,8 @@ interface CliOptions {
   cheapModel: ModelId | undefined;
   /** Sent as output_config.effort when given; otherwise the model's own default applies. */
   effort: EffortLevel | undefined;
+  /** Prompt tokens at which to compact; undefined is the model's default, false never. */
+  compactAt: number | false | undefined;
   prompt: string | undefined;
   resume: string | undefined;
   maxTurns: number;
@@ -195,6 +197,7 @@ function parseArgs(argv: string[]): CliOptions {
     gateThreshold: undefined,
     cheapModel: undefined,
     effort: undefined,
+    compactAt: undefined,
     prompt: undefined,
     resume: undefined,
     maxTurns: 20,
@@ -275,6 +278,16 @@ function parseArgs(argv: string[]): CliOptions {
           process.exit(1);
         }
         opts.effort = value as EffortLevel;
+        break;
+      }
+      case "--compact-at": {
+        const value = next();
+        const n = Number(value);
+        if (value !== "off" && !(Number.isInteger(n) && n > 0)) {
+          console.error(chalk.red(`--compact-at takes a token count or "off", got ${value}`));
+          process.exit(1);
+        }
+        opts.compactAt = value === "off" ? false : n;
         break;
       }
       case "-h":
@@ -362,6 +375,9 @@ ${chalk.bold("Options")}
                          same judge. Needs --gate to supply one.
       --effort <level>   low | medium | high | xhigh | max, sent as
                          output_config.effort (default: the model's own)
+      --compact-at <n>   Compact the conversation once a prompt reaches n
+                         tokens, or "off" (default: 80% of the model's
+                         context window, at most 150,000)
   -h, --help             Show this help
 
 ${chalk.bold("Slash commands (REPL)")}
@@ -428,6 +444,14 @@ function attachRenderer(agent: Agent): void {
         console.log(chalk.gray(`   ${status} in ${event.durationMs}ms`));
         break;
       }
+      case "compacted": {
+        endStream();
+        const where = event.transcript ? ` — full transcript: ${event.transcript}` : "";
+        console.log(
+          chalk.gray(`⟲  Compacted the conversation at ${event.promptTokens.toLocaleString("en-US")} prompt tokens${where}`),
+        );
+        break;
+      }
       default:
         break;
     }
@@ -481,6 +505,7 @@ class ReplState {
   gateThreshold: number | undefined;
   maxTurns: number;
   effort: EffortLevel | undefined;
+  compactAt: number | false | undefined;
   sessionId: string | undefined;
   /** The run in progress, so Ctrl+C can stop it. */
   current: AbortController | undefined;
@@ -506,6 +531,7 @@ class ReplState {
     this.gateThreshold = opts.gateThreshold;
     this.maxTurns = opts.maxTurns;
     this.effort = opts.effort;
+    this.compactAt = opts.compactAt;
     this.sessionId = opts.resume;
     this.current = undefined;
     this.prompt = undefined;
@@ -580,6 +606,7 @@ class ReplState {
       cwd: this.cwd,
       maxTurns: this.maxTurns,
       ...(this.effort ? { effort: this.effort } : {}),
+      ...(this.compactAt !== undefined ? { compactAt: this.compactAt } : {}),
       permissions: {
         ...resolvePreset(this.preset),
         ...(this.prompt ? { prompt: this.prompt } : {}),

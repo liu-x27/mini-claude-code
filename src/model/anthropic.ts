@@ -89,7 +89,7 @@ export function buildParams(request: ModelRequest): Anthropic.MessageCreateParam
     ...(request.effort ? { output_config: { effort: request.effort } } : {}),
     ...(tools.length > 0 && {
       tools,
-      tool_choice: { type: "auto" } as Anthropic.ToolChoiceAuto,
+      tool_choice: (request.toolChoice === "none" ? { type: "none" } : { type: "auto" }) as Anthropic.ToolChoice,
     }),
   };
 }

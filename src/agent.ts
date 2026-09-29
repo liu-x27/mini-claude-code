@@ -3,6 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type Anthropic from "@anthropic-ai/sdk";
 import chalk from "chalk";
+import { COMPACTION_PROMPT, compactedHistory, defaultCompactAt, renderTranscript } from "./context/compaction.js";
 import { loadProjectInstructions } from "./context/instructions.js";
 import { AnthropicClient } from "./model/anthropic.js";
 import type { ModelClient, ModelDelta, ModelResponse } from "./model/types.js";
@@ -71,7 +72,7 @@ export class Agent {
    * serves for resumeSessionId, and Required<> under
    * exactOptionalPropertyTypes cannot hold an absent value.
    */
-  private config: Required<Omit<AgentConfig, "router" | "client" | "retryJudge" | "stopJudge" | "effort">>;
+  private config: Required<Omit<AgentConfig, "router" | "client" | "retryJudge" | "stopJudge" | "effort" | "compactAt">>;
   private registry: ToolRegistry;
   private permissions: PermissionSystem;
   private sessions: SessionManager;
@@ -80,6 +81,7 @@ export class Agent {
   private retryJudge: RetryJudge | undefined;
   private stopJudge: StopJudge | undefined;
   private effort: EffortLevel | undefined;
+  private compactAt: number | false | undefined;
 
   constructor(config: AgentConfig = {}, registry?: ToolRegistry) {
     this.client = config.client ?? new AnthropicClient();
@@ -107,6 +109,7 @@ export class Agent {
     this.retryJudge = config.retryJudge;
     this.stopJudge = config.stopJudge;
     this.effort = config.effort;
+    this.compactAt = config.compactAt;
 
     this.registry = registry ?? globalRegistry;
     this.permissions = new PermissionSystem(this.config.permissions);
@@ -140,6 +143,15 @@ export class Agent {
     });
     await this.route(prompt);
 
+    const toolCalls: ToolCallRecord[] = [];
+    const usageAccum: AgentUsage = {
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheCreationTokens: 0,
+      cacheReadTokens: 0,
+      estimatedCostUsd: 0,
+    };
+
     const messages: ConversationMessage[] = [...session.messages];
     const notes: string[] = [];
     if (session.messages.length === 0 && this.config.projectInstructions) {
@@ -154,16 +166,17 @@ export class Agent {
       );
     }
     session.metadata.environment = environment;
-    messages.push({ role: "user", content: userTurn(prompt, notes) });
 
-    const toolCalls: ToolCallRecord[] = [];
-    const usageAccum: AgentUsage = {
-      inputTokens: 0,
-      outputTokens: 0,
-      cacheCreationTokens: 0,
-      cacheReadTokens: 0,
-      estimatedCostUsd: 0,
-    };
+    // The session may already be past the budget: its last call said how big it was.
+    let promptTokens = session.metadata.contextTokens ?? 0;
+    if (messages.length > 0 && promptTokens >= this.compactionTrigger()) {
+      const compacted = await this.compact(messages, tools, signal, usageAccum, session, 0, undefined);
+      if (compacted) {
+        messages.splice(0, messages.length, ...compacted);
+        promptTokens = 0;
+      }
+    }
+    messages.push({ role: "user", content: userTurn(prompt, notes) });
 
     let turn = 0;
     let finalText = "";
@@ -187,12 +200,26 @@ export class Agent {
         turn++;
         await this.emit({ type: "turn_start", turn });
 
+        // Between turns, never inside one: the history ends in a user
+        // message here, so no tool_use is waiting for its result.
+        if (turn > 1 && promptTokens >= this.compactionTrigger()) {
+          const compacted = await this.compact(messages, tools, signal, usageAccum, session, turn, prompt);
+          if (compacted) {
+            messages.splice(0, messages.length, ...compacted);
+            promptTokens = 0;
+            await save();
+          }
+        }
+
         const called = await this.callModel(turn, messages, tools, signal, usageAccum);
         if (!called) {
           finalStopReason = "aborted";
           break;
         }
         const { response, maxTokens } = called;
+        const u = response.usage;
+        promptTokens = u.inputTokens + u.cacheCreationTokens + u.cacheReadTokens;
+        session.metadata.contextTokens = promptTokens;
 
         const toolUseBlocks = response.content.filter(
           (b): b is Anthropic.ToolUseBlockParam => b.type === "tool_use",
@@ -380,6 +407,88 @@ export class Agent {
 
       await this.emit({ type: "turn_end", turn, usage: turnUsage });
       return { response, maxTokens };
+    }
+  }
+
+  /** Prompt tokens past which the conversation is compacted before the next call. */
+  private compactionTrigger(): number {
+    if (this.compactAt === false) return Number.POSITIVE_INFINITY;
+    return this.compactAt ?? defaultCompactAt(this.config.model);
+  }
+
+  /**
+   * Ask the model to summarise the conversation, archive the full one, and
+   * return the history to continue from — or undefined, and carry on
+   * uncompacted, if any of that fails. The request is the conversation's
+   * own (same system, same tools, with tool_choice none), so it reads the
+   * cached prefix instead of paying for the history a second time.
+   */
+  private async compact(
+    messages: ConversationMessage[],
+    tools: Tool[],
+    signal: AbortSignal | undefined,
+    usageAccum: AgentUsage,
+    session: Session,
+    turn: number,
+    continuing: string | undefined,
+  ): Promise<ConversationMessage[] | undefined> {
+    const promptTokens = session.metadata.contextTokens ?? 0;
+    const ask = async (history: ConversationMessage[], withTools: Tool[]) => {
+      const response = await this.client.create(
+        {
+          model: this.config.model,
+          system: this.buildSystemPrompt(),
+          messages: this.buildApiMessages(history),
+          tools: withTools,
+          ...(withTools.length > 0 ? { toolChoice: "none" as const } : {}),
+          maxTokens: this.config.maxTokens,
+          thinking: this.config.thinking,
+          effort: this.effort,
+          enableCaching: this.config.enableCaching,
+          stream: false,
+          signal,
+        },
+        async () => undefined,
+      );
+      this.accumulateUsage(response, usageAccum);
+      return { text: this.extractText(response.content).trim(), stopReason: response.stopReason };
+    };
+    try {
+      let { text: summary, stopReason } = await ask([...messages, { role: "user", content: COMPACTION_PROMPT }], tools);
+      if (!summary && !signal?.aborted) {
+        logger.warn(`Compaction got no summary (stop_reason ${stopReason}); asking again over a plain-text transcript`);
+        const flat = `${renderTranscript(messages)}\n\n---\n\n${COMPACTION_PROMPT}`;
+        ({ text: summary, stopReason } = await ask([{ role: "user", content: flat }], []));
+      }
+      if (!summary) {
+        logger.warn(`Compaction returned no summary (stop_reason ${stopReason}); carrying on uncompacted`);
+        return undefined;
+      }
+      // Only now, so a compaction that fails leaves no archive behind.
+      const transcript = await this.archiveTranscript(session.metadata.sessionId, messages);
+      session.metadata.compactions = (session.metadata.compactions ?? 0) + 1;
+      session.metadata.contextTokens = 0;
+      await this.emit({ type: "compacted", turn, promptTokens, transcript });
+      return compactedHistory(summary, transcript, continuing);
+    } catch (err) {
+      if (!signal?.aborted) {
+        logger.warn(`Compaction failed, carrying on uncompacted: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      return undefined;
+    }
+  }
+
+  /** Where the pre-compaction transcript is kept: beside the sessions, or with the tool output when none are saved. */
+  private async archiveTranscript(sessionId: string, messages: ConversationMessage[]): Promise<string | undefined> {
+    try {
+      if (this.config.persistSessions) return await this.sessions.archive(sessionId, messages);
+      const dir = path.join(outputDir(), safeName(sessionId));
+      await fs.mkdir(dir, { recursive: true });
+      const file = path.join(dir, `transcript-${Date.now()}.json`);
+      await fs.writeFile(file, JSON.stringify(messages, null, 2), "utf-8");
+      return file;
+    } catch {
+      return undefined;
     }
   }
 
@@ -743,11 +852,18 @@ function stopNotice(stopReason: string, maxTokens: number): string | undefined {
   }
 }
 
+function outputDir(): string {
+  return process.env.AGENT_OUTPUT_DIR || path.join(os.tmpdir(), "agent-app-output");
+}
+
+function safeName(s: string): string {
+  return s.replace(/[^\w-]/g, "_");
+}
+
 /** Where the whole of a cut result is kept, or undefined if it could not be written. */
 async function saveFullOutput(sessionId: string, toolUseId: string, text: string): Promise<string | undefined> {
-  const safe = (s: string) => s.replace(/[^\w-]/g, "_");
-  const dir = path.join(process.env.AGENT_OUTPUT_DIR || path.join(os.tmpdir(), "agent-app-output"), safe(sessionId));
-  const file = path.join(dir, `${safe(toolUseId)}.txt`);
+  const dir = path.join(outputDir(), safeName(sessionId));
+  const file = path.join(dir, `${safeName(toolUseId)}.txt`);
   try {
     await fs.mkdir(dir, { recursive: true });
     await fs.writeFile(file, text, "utf-8");

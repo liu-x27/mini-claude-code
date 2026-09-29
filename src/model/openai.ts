@@ -51,7 +51,7 @@ export class OpenAICompatibleClient implements ModelClient {
       {
         model: request.model,
         messages: toOpenAIMessages(request.system, request.messages),
-        ...(tools.length > 0 && { tools, tool_choice: "auto" as const }),
+        ...(tools.length > 0 && { tools, tool_choice: request.toolChoice ?? "auto" }),
         stream: true,
         stream_options: { include_usage: true },
       },

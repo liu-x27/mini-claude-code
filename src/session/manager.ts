@@ -80,6 +80,20 @@ export class SessionManager {
     }
   }
 
+  /**
+   * Keep a session's messages as they stood before a compaction replaced
+   * them, beside the sessions (not among them: `list` reads only the top
+   * level). Returns the file, which the summary names.
+   */
+  async archive(sessionId: string, messages: ConversationMessage[]): Promise<string> {
+    this.filePath(sessionId); // refuses anything but a session id
+    const dir = path.join(this.sessionDir, "archive");
+    await fs.mkdir(dir, { recursive: true });
+    const file = path.join(dir, `${sessionId}-${Date.now()}.json`);
+    await fs.writeFile(file, JSON.stringify(messages, null, 2), "utf-8");
+    return file;
+  }
+
   /** Update session metadata (usage stats, title, etc.) */
   async updateMetadata(session: Session, update: Partial<SessionMetadata>): Promise<Session> {
     const updated: Session = {

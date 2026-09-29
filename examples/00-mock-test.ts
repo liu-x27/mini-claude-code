@@ -1638,6 +1638,82 @@ await checkAsync("AGENTS.md：新会话读入从仓库根到工作目录的说�
   if (JSON.stringify(c3.seen[0]).includes("RULE")) throw new Error("关掉之后还读了");
 });
 
+const bigPrompt = { inputTokens: 500, outputTokens: 10, cacheCreationTokens: 0, cacheReadTokens: 0 };
+
+await checkAsync("压缩：提示超过预算，下一轮前先总结；全文归档，之后只带总结", async () => {
+  const dir = path.join(scratch, "compact");
+  let asked: ModelRequest | undefined;
+  let after: ModelRequest["messages"] = [];
+  const client = new ScriptedClient([
+    { ...calls(["t1", "Echo", { text: "the bug is in parser.ts line 40" }]), usage: bigPrompt },
+    async (req) => ((asked = req), said("Task: fix the parser. Findings: the bug is in parser.ts line 40.")),
+    async (req) => ((after = req.messages), said("fixed")),
+  ]);
+  const { agent, events } = scriptedAgent(client, { persistSessions: true, sessionDir: dir, compactAt: 100 });
+  const result = await agent.run("fix the parser");
+  if (result.text !== "fixed") throw new Error(`结果: ${result.text}`);
+  if (asked?.toolChoice !== "none" || !JSON.stringify(asked.messages.at(-1)).includes("Write a summary")) {
+    throw new Error("总结请求不对：应带同样的工具、tool_choice none、末尾是总结要求");
+  }
+  if (after.length !== 1 || !JSON.stringify(after[0]).includes("parser.ts line 40")) {
+    throw new Error(`压缩后的历史: ${JSON.stringify(after).slice(0, 200)}`);
+  }
+  if (!JSON.stringify(after[0]).includes("as the user wrote it:\\n\\nfix the parser")) throw new Error("应原样附上正在做的请求");
+  const ev = events.find((e) => e.type === "compacted");
+  const transcript = ev?.type === "compacted" ? ev.transcript : undefined;
+  if (!transcript || !(await fs.readFile(transcript, "utf-8")).includes("fix the parser")) throw new Error("全文没有归档");
+  const saved = await new SessionManager(dir).load(result.sessionId);
+  if (saved?.metadata.compactions !== 1 || saved.messages.length !== 2) throw new Error("存下的会话应是总结加最后的回答");
+  if (!(await new SessionManager(dir).list()).every((m) => m.sessionId === result.sessionId)) throw new Error("归档混进了会话列表");
+});
+
+await checkAsync("压缩：续跑一个已超预算的会话，先压缩再接新的提问", async () => {
+  const dir = path.join(scratch, "compact-resume");
+  const c1 = new ScriptedClient([{ ...said("first answer"), usage: bigPrompt }]);
+  const r1 = await scriptedAgent(c1, { persistSessions: true, sessionDir: dir, compactAt: 100 }).agent.run("q1");
+  const c2 = new ScriptedClient([said("Task: q1, answered."), said("second answer")]);
+  await scriptedAgent(c2, { persistSessions: true, sessionDir: dir, compactAt: 100, resumeSessionId: r1.sessionId }).agent.run("q2");
+  const next = c2.seen[1]!;
+  if (next.length !== 2 || !JSON.stringify(next[0]).includes("q1, answered") || next[1]!.content !== "q2") {
+    throw new Error(`续跑时的历史: ${JSON.stringify(next).slice(0, 300)}`);
+  }
+  if (JSON.stringify(next[0]).includes("Continue from")) throw new Error("后面有新提问时不该说“接着做”");
+});
+
+await checkAsync("压缩：端点不理 tool_choice none、又调了工具时，改用纯文本记录再问一次", async () => {
+  let second: ModelRequest | undefined;
+  const client = new ScriptedClient([
+    { ...calls(["t1", "Echo", { text: "found it" }]), usage: bigPrompt },
+    calls(["sneaky", "Echo", { text: "not a summary" }]),
+    async (req) => ((second = req), said("Task: go. Findings: found it.")),
+    said("done"),
+  ]);
+  const { agent, events } = scriptedAgent(client, { compactAt: 100 });
+  await agent.run("go");
+  if (second?.tools.length !== 0 || second.messages.length !== 1) throw new Error("第二次应不带工具、只发一条纯文本记录");
+  const flat = JSON.stringify(second.messages[0]);
+  if (!flat.includes("called Echo") || !flat.includes("found it")) throw new Error(`纯文本记录: ${flat.slice(0, 200)}`);
+  if (!events.some((e) => e.type === "compacted")) throw new Error("第二次拿到总结后应该压缩");
+});
+
+await checkAsync("压缩：总结失败就不压缩、不留归档、照常跑；compactAt: false 从不压缩", async () => {
+  const dir = path.join(scratch, "compact-fail");
+  const failing = new ScriptedClient([
+    { ...calls(["t1", "Echo", { text: "x" }]), usage: bigPrompt },
+    async () => {
+      throw new Error("summary call failed");
+    },
+    said("done anyway"),
+  ]);
+  const r = await scriptedAgent(failing, { compactAt: 100, persistSessions: true, sessionDir: dir }).agent.run("go");
+  if (r.text !== "done anyway" || failing.seen[2]!.length !== 3) throw new Error("总结失败后应带着完整历史继续");
+  if (await exists(path.join(dir, "archive"))) throw new Error("压缩没成却留下了归档");
+
+  const never = new ScriptedClient([{ ...calls(["t1", "Echo", { text: "x" }]), usage: bigPrompt }, said("done")]);
+  await scriptedAgent(never, { compactAt: false }).agent.run("go");
+  if (never.seen.length !== 2) throw new Error("关掉压缩还是压缩了");
+});
+
 await checkAsync("effort：设了才发 output_config.effort，没设就不发", async () => {
   const base: ModelRequest = {
     model: "claude-opus-5-5",
