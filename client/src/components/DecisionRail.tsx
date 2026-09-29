@@ -1,7 +1,7 @@
 import type { CSSProperties } from "react";
 import type { Message, ToolCall } from "../hooks/useChat";
 import { DEFAULT_THRESHOLD, shortName } from "./Answers";
-import { primaryArg } from "./ToolCall";
+import { callLabel } from "./ToolCall";
 
 /** Every call the gate was asked about, in order. */
 export function gatedCalls(messages: Message[]): ToolCall[] {
@@ -92,7 +92,7 @@ export function DecisionRail({ messages, judge, waitingId }: { messages: Message
             <div key={c.id} className="decision" data-live={live || undefined} data-verdict={verdict}>
               <div className="decision-head">
                 <span className={`verdict verdict-${verdict}`}>{verdict}</span>
-                <span className="decision-cmd">{primaryArg(c.input)}</span>
+                <span className="decision-cmd">{callLabel(c)}</span>
                 <span className="decision-ms">{g.latencyMs !== undefined ? `${g.latencyMs} ms` : ""}</span>
               </div>
               {g.answers && (

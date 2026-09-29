@@ -4,14 +4,26 @@ import { DEFAULT_THRESHOLD, fmtP, Ring, Scale } from "./Answers";
 import { GateBadge } from "./GateBadge";
 import { Icon, TOOL_ICONS } from "./Icon";
 
+const NAMED_BY = ["command", "file_path", "pattern", "url", "path"];
+
 /** The argument a person would name the call by: the command, the path, the pattern. */
 export function primaryArg(input: Record<string, unknown>): string {
-  for (const key of ["command", "file_path", "pattern", "url", "path"]) {
+  for (const key of NAMED_BY) {
     const v = input[key];
     if (typeof v === "string") return v;
   }
   const first = Object.values(input)[0];
   return typeof first === "string" ? first : JSON.stringify(input);
+}
+
+/**
+ * What a row names a call by. A command or a path is shown whole, since that
+ * is what the gate and the user judge; a call with neither, such as TodoWrite
+ * or Task, by the tool's own summary rather than by its input as JSON.
+ */
+export function callLabel(tc: ToolCallData): string {
+  if (NAMED_BY.some((key) => typeof tc.input[key] === "string")) return primaryArg(tc.input);
+  return tc.summary || primaryArg(tc.input);
 }
 
 /** The server reports a call that never ran as an error with its reason. */
@@ -57,7 +69,7 @@ export function ToolCall({
           <Icon name={TOOL_ICONS[tc.name] ?? "tool"} size={14} />
         </span>
         <span className="tool-name">{tc.name}</span>
-        <span className="tool-arg">{primaryArg(tc.input)}</span>
+        <span className="tool-arg">{callLabel(tc)}</span>
         {refNo !== undefined && <sup className="tool-ref">{refNo}</sup>}
         <GateBadge gate={tc.gate} approvedByUser={tc.approvedBy === "user"} />
         {tc.retry?.retry && (
@@ -120,7 +132,7 @@ export function ToolNote({ tc, refNo, waiting }: { tc: ToolCallData; refNo: numb
         {tc.name}
         <span className="note-verdict">{verdict}</span>
       </h4>
-      <div className="note-cmd">{primaryArg(tc.input)}</div>
+      <div className="note-cmd">{callLabel(tc)}</div>
       {answers.length > 0 && (
         <table className="note-table">
           <tbody>

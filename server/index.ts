@@ -459,7 +459,7 @@ function forward(event: AgentEvent, send: (event: string, data: unknown) => void
     // The card appears when the model asks, not when the call starts, so
     // that the gate's verdict and any approval have a card to attach to.
     case "tool_request":
-      send("tool_start", { id: event.toolUseId, name: event.toolName, input: event.input });
+      send("tool_start", { id: event.toolUseId, name: event.toolName, input: event.input, summary: event.summary });
       break;
     case "tool_denied":
       send("tool_end", { id: event.toolUseId, name: event.toolName, error: event.reason, durationMs: 0 });
@@ -488,7 +488,7 @@ function forward(event: AgentEvent, send: (event: string, data: unknown) => void
         send("subagent_tool", {
           subagent: event.subagent,
           toolName: event.event.toolName,
-          summary: JSON.stringify(event.event.input).slice(0, 120),
+          summary: event.event.summary,
         });
       }
       break;

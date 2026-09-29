@@ -2024,6 +2024,28 @@ await checkAsync("TodoWrite：整张清单每次重写，存进会话、发出�
   if (saved?.metadata.todos?.length !== 3 || saved.metadata.todos[1]?.status !== "in_progress") throw new Error("清单没存进会话");
 });
 
+await checkAsync("工具事件带着工具自己的一行摘要；未知工具、不合法的输入给空串，不抛错", async () => {
+  const client = new ScriptedClient([
+    calls(
+      ["s1", "TodoWrite", { todos: [{ content: "a", status: "completed" }, { content: "b", status: "pending" }] }],
+      ["s2", "NoSuchTool", { x: 1 }],
+      ["s3", "TodoWrite", { todos: "not a list" }],
+    ),
+    said("done"),
+  ]);
+  const { agent, events } = scriptedAgent(client);
+  await agent.run("go");
+  const summary = (id: string, type: "tool_request" | "tool_start") => {
+    const e = events.find((x) => x.type === type && x.toolUseId === id);
+    return e && (e.type === "tool_request" || e.type === "tool_start") ? e.summary : undefined;
+  };
+  if (summary("s1", "tool_request") !== "2 items, 1 open" || summary("s1", "tool_start") !== "2 items, 1 open") {
+    throw new Error(`TodoWrite 的摘要: ${summary("s1", "tool_request")} / ${summary("s1", "tool_start")}`);
+  }
+  if (summary("s2", "tool_request") !== "" || summary("s3", "tool_request") !== "") throw new Error("未知工具或坏输入的摘要不是空串");
+  if (events.some((e) => e.type === "tool_start" && e.toolUseId !== "s1")) throw new Error("不该执行的调用执行了");
+});
+
 await checkAsync("CLI -p 的 json / stream-json：stdout 只有 JSON；退出码说明结局；没人可问时拒绝并在 stderr 说明", async () => {
   // 一个会流式回答的假 Messages 端点：第一次要调 Bash，看到工具结果后说 done
   const sse = (events: Array<[string, Record<string, unknown>]>) =>

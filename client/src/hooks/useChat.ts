@@ -20,6 +20,8 @@ export interface ToolCall {
   id: string;
   name: string;
   input: Record<string, unknown>;
+  /** The tool's own one line for the call; missing from servers older than this client. */
+  summary?: string | undefined;
   result?: string | undefined;
   error?: string | undefined;
   durationMs?: number | undefined;
@@ -206,6 +208,7 @@ export function useChat(
                     id: data["id"] as string,
                     name: data["name"] as string,
                     input: data["input"] as Record<string, unknown>,
+                    summary: data["summary"] as string | undefined,
                     status: "running",
                   };
                   last.toolCalls = [...(last.toolCalls ?? []), tc];

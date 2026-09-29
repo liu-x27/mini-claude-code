@@ -403,9 +403,12 @@ export type AgentEvent =
   | { type: "session"; sessionId: string; resumed: boolean }
   | { type: "text_delta"; delta: string }
   | { type: "thinking_delta"; delta: string }
-  | { type: "tool_request"; toolUseId: string; toolName: string; input: Record<string, unknown> }
+  // `summary` is the tool's own one line for the call, as permission prompts
+  // show it ("3 items, 1 open", "general-purpose: find the loop"); "" for
+  // an unknown tool or an input it would not accept.
+  | { type: "tool_request"; toolUseId: string; toolName: string; input: Record<string, unknown>; summary: string }
   | { type: "tool_denied"; toolUseId: string; toolName: string; reason: string }
-  | { type: "tool_start"; toolUseId: string; toolName: string; input: Record<string, unknown> }
+  | { type: "tool_start"; toolUseId: string; toolName: string; input: Record<string, unknown>; summary: string }
   | {
       type: "tool_end";
       toolUseId: string;

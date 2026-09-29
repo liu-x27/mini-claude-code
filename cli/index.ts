@@ -531,7 +531,7 @@ function attachRenderer(agent: Agent): void {
         endStream();
         console.log(
           chalk.cyan(`⚙  ${event.toolName}`) +
-            chalk.gray(` — ${JSON.stringify(event.input).slice(0, 100)}`),
+            chalk.gray(` — ${event.summary || JSON.stringify(event.input).slice(0, 100)}`),
         );
         break;
       case "tool_end": {
@@ -550,7 +550,9 @@ function attachRenderer(agent: Agent): void {
         if (event.event.type === "tool_start") {
           endStream();
           console.log(
-            chalk.gray(`   ↳ ${event.subagent} ⚙ ${event.event.toolName} — ${JSON.stringify(event.event.input).slice(0, 90)}`),
+            chalk.gray(
+              `   ↳ ${event.subagent} ⚙ ${event.event.toolName} — ${event.event.summary || JSON.stringify(event.event.input).slice(0, 90)}`,
+            ),
           );
         }
         break;

@@ -57,6 +57,7 @@ export class TodoWriteTool extends Tool<TodoInput> {
 
   override summarize(input: TodoInput): string {
     const open = input.todos.filter((t) => t.status !== "completed").length;
-    return `${input.todos.length} item(s), ${open} open`;
+    const n = input.todos.length;
+    return `${n} ${n === 1 ? "item" : "items"}, ${open} open`;
   }
 }

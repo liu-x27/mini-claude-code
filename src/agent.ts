@@ -641,11 +641,13 @@ export class Agent {
     signal: AbortSignal | undefined,
   ): Promise<Anthropic.ToolResultBlockParam> {
     const toolUseId = block.id;
+    const tool = this.lookup(block.name);
     await this.emit({
       type: "tool_request",
       toolUseId,
       toolName: block.name,
       input: block.input as Record<string, unknown>,
+      summary: summaryOf(tool, block.input),
     });
 
     const refuse = async (reason: string, content: string) => {
@@ -653,7 +655,6 @@ export class Agent {
       return { type: "tool_result" as const, tool_use_id: toolUseId, content, is_error: true };
     };
 
-    const tool = this.lookup(block.name);
     if (!tool) {
       logger.warn(`Unknown tool: ${block.name}`);
       return refuse("not registered", `Error: Tool "${block.name}" is not registered.`);
@@ -697,7 +698,7 @@ export class Agent {
       return refuse("cancelled", "Cancelled: the run was stopped before this call started.");
     }
 
-    await this.emit({ type: "tool_start", toolUseId, toolName: tool.name, input });
+    await this.emit({ type: "tool_start", toolUseId, toolName: tool.name, input, summary: summaryOf(tool, input) });
 
     const start = Date.now();
     const attempt = async (): Promise<ToolResult> => {
@@ -1095,6 +1096,19 @@ function sumUsage(a: AgentUsage, b: AgentUsage): AgentUsage {
     cacheReadTokens: a.cacheReadTokens + b.cacheReadTokens,
     estimatedCostUsd: addCost(a.estimatedCostUsd, b.estimatedCostUsd),
   };
+}
+
+/**
+ * A tool's own one-line summary of a call. Before validation the input can be
+ * anything, and a summarize() written for its own input type may throw on it.
+ */
+function summaryOf(tool: Tool | undefined, input: unknown): string {
+  if (!tool || typeof input !== "object" || input === null) return "";
+  try {
+    return tool.summarize(input as never);
+  } catch {
+    return "";
+  }
 }
 
 /** The history minus a trailing assistant turn that asked for tools it never got results for. */
