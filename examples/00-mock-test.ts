@@ -12,7 +12,7 @@ import { FileReadTool } from "../src/tools/file-read.js";
 import { FileWriteTool } from "../src/tools/file-write.js";
 import { FileEditTool } from "../src/tools/file-edit.js";
 import { GlobTool } from "../src/tools/glob.js";
-import { GrepTool } from "../src/tools/grep.js";
+import { buildRgArgs, GrepTool } from "../src/tools/grep.js";
 import { PermissionSystem, PermissionPresets } from "../src/permissions/index.js";
 import {
   AllowlistJudge,
@@ -1233,6 +1233,35 @@ await checkAsync("停：组合判断先问便宜的，说停就不再问模型�
   const short = await createStopJudge({ backend })({ prompt: "go", turn: 2, recent: [repeated, { ...repeated, outcome: "other" }] });
   if (short.stop || backend.calls !== 0) throw new Error("调用不足 4 次也问了模型");
 });
+
+// ─────────────────────────────────────────────
+// 14. Harness regressions：2026-09-28 对 harness 本体的探针，每条都复现过
+// ─────────────────────────────────────────────
+section("14. Harness regressions");
+
+const scratch = await fs.mkdtemp(path.join(os.tmpdir(), "agent_regress_"));
+const exists = (p: string) => fs.access(p).then(() => true, () => false);
+
+check("Grep：pattern 和 glob 各是 rg 的一个参数，不经过 shell", () => {
+  const glob = '*" & echo pwned> pwned.txt & rem "';
+  const pattern = "$(echo pwned > pwned.txt)";
+  const args = buildRgArgs({ pattern, glob }, "/tmp/x");
+  if (args[args.indexOf(glob) - 1] !== "--glob") throw new Error(`glob 不是 --glob 的值: ${JSON.stringify(args)}`);
+  if (args[args.indexOf(pattern) - 1] !== "--") throw new Error(`pattern 不在 -- 之后: ${JSON.stringify(args)}`);
+  if (args.some((a) => a.includes("'"))) throw new Error("内置排除规则不该带引号——cmd.exe 不会去掉它们");
+});
+
+await checkAsync("Grep：注入载荷不被执行（有 rg 走 rg，没有走 JS 回退）", async () => {
+  const dir = path.join(scratch, "grep");
+  await fs.mkdir(dir);
+  await fs.writeFile(path.join(dir, "a.txt"), "hello\n");
+  const tool = new GrepTool();
+  await tool.execute({ pattern: "hello", glob: '*" & echo pwned> pwned.txt & rem "' }, { ...ctx, cwd: dir });
+  await tool.execute({ pattern: "$(echo pwned > pwned.txt)" }, { ...ctx, cwd: dir });
+  if (await exists(path.join(dir, "pwned.txt"))) throw new Error("注入的命令被执行了");
+});
+
+await fs.rm(scratch, { recursive: true, force: true });
 
 // ─────────────────────────────────────────────
 // Summary

@@ -1,4 +1,4 @@
-import { exec } from "node:child_process";
+import { execFile } from "node:child_process";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { promisify } from "node:util";
@@ -6,7 +6,12 @@ import { glob } from "glob";
 import type { ToolContext, ToolResult } from "../types.js";
 import { Tool } from "./base.js";
 
-const execAsync = promisify(exec);
+// execFile, never exec: the pattern and the glob come from the model, and
+// through a shell they were commands. Grep is not a dangerous tool, so it
+// runs without a prompt even under --read-only, and a `glob` of
+// `*" & <command> & rem "` used to run <command> on cmd.exe, as a `$(...)`
+// in the pattern did under /bin/sh.
+const execFileAsync = promisify(execFile);
 
 interface GrepInput {
   pattern: string;
@@ -90,41 +95,28 @@ export class GrepTool extends Tool<GrepInput> {
   ): Promise<ToolResult> {
     const headLimit = input.head_limit ?? 250;
     const normalized = searchPath.replace(/\\/g, "/");
-    const cmd = this.buildRgCmd(rgPath, input, normalized);
 
+    let stdout: string;
     try {
-      const { stdout } = await execAsync(cmd, {
+      ({ stdout } = await execFileAsync(rgPath, buildRgArgs(input, normalized), {
         cwd: context.cwd,
         maxBuffer: 5 * 1024 * 1024,
-        env: { ...process.env },
-      });
-
-      const lines = stdout.trim().split("\n").filter(Boolean);
-      if (lines.length === 0) return { type: "success", output: "No matches found." };
-
-      const truncated = lines.slice(0, headLimit);
-      const suffix = lines.length > headLimit ? `\n[... ${lines.length - headLimit} more]` : "";
-      return { type: "success", output: truncated.join("\n") + suffix };
+        windowsHide: true,
+      }));
     } catch (err: unknown) {
-      const e = err as { code?: number; stdout?: string };
+      const e = err as { code?: number | string; stdout?: string };
       if (e.code === 1) return { type: "success", output: "No matches found." };
-      return this.jsGrep(input, searchPath); // fallback on error
+      // Past maxBuffer the matches so far are still good; head_limit cuts them anyway.
+      if (e.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" && e.stdout) stdout = e.stdout;
+      else return this.jsGrep(input, searchPath); // fallback on error
     }
-  }
 
-  private buildRgCmd(rgPath: string, input: GrepInput, normalizedPath: string): string {
-    const parts = [`"${rgPath}"`, "--no-heading", "-n"];
-    if (input["-i"]) parts.push("-i");
-    if (input["-A"]) parts.push(`-A ${input["-A"]}`);
-    if (input["-B"]) parts.push(`-B ${input["-B"]}`);
-    if (input.output_mode === "files_with_matches") parts.push("-l");
-    else if (input.output_mode === "count") parts.push("-c");
-    if (input.glob) parts.push(`--glob "${input.glob}"`);
-    parts.push("--glob '!node_modules/**'");
-    parts.push("--glob '!.git/**'");
-    parts.push("--glob '!dist/**'");
-    parts.push(`-- ${JSON.stringify(input.pattern)} "${normalizedPath}"`);
-    return parts.join(" ");
+    const lines = stdout.trim().split("\n").filter(Boolean);
+    if (lines.length === 0) return { type: "success", output: "No matches found." };
+
+    const truncated = lines.slice(0, headLimit);
+    const suffix = lines.length > headLimit ? `\n[... ${lines.length - headLimit} more]` : "";
+    return { type: "success", output: truncated.join("\n") + suffix };
   }
 
   // ─────────────────────────────────────────────
@@ -235,6 +227,7 @@ export class GrepTool extends Tool<GrepInput> {
 
     // Common install locations
     const candidates = [
+      ...(process.env.AGENT_RG_PATH ? [process.env.AGENT_RG_PATH] : []),
       "rg",
       "C:/Program Files/ripgrep/rg.exe",
       `${process.env.APPDATA}/ripgrep/rg.exe`,
@@ -245,10 +238,7 @@ export class GrepTool extends Tool<GrepInput> {
 
     for (const candidate of candidates) {
       try {
-        await execAsync(`"${candidate}" --version`, {
-          timeout: 2000,
-          env: { ...process.env },
-        });
+        await execFileAsync(candidate, ["--version"], { timeout: 2000, windowsHide: true });
         this.rgPathCache = candidate;
         return candidate;
       } catch {
@@ -263,4 +253,23 @@ export class GrepTool extends Tool<GrepInput> {
   override summarize(input: GrepInput): string {
     return `/${input.pattern}/${input.glob ? ` in ${input.glob}` : ""}`;
   }
+}
+
+/**
+ * rg's argument vector. Each value the model supplied is one element, so
+ * nothing in it is parsed by a shell. The built-in excludes used to be
+ * single-quoted, which cmd.exe does not strip, so on Windows they never
+ * excluded anything.
+ */
+export function buildRgArgs(input: GrepInput, searchPath: string): string[] {
+  const args = ["--no-heading", "-n"];
+  if (input["-i"]) args.push("-i");
+  if (input["-A"]) args.push("-A", String(Math.max(0, Math.floor(input["-A"]))));
+  if (input["-B"]) args.push("-B", String(Math.max(0, Math.floor(input["-B"]))));
+  if (input.output_mode === "files_with_matches") args.push("-l");
+  else if (input.output_mode === "count") args.push("-c");
+  if (input.glob) args.push("--glob", input.glob);
+  args.push("--glob", "!node_modules/**", "--glob", "!.git/**", "--glob", "!dist/**");
+  args.push("--", input.pattern, searchPath);
+  return args;
 }
