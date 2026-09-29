@@ -141,7 +141,7 @@ export class Agent {
       sessionId: session.metadata.sessionId,
       resumed: session.messages.length > 0,
     });
-    await this.route(prompt);
+    await this.route(prompt, session);
 
     const toolCalls: ToolCallRecord[] = [];
     const usageAccum: AgentUsage = {
@@ -670,15 +670,25 @@ export class Agent {
   }
 
   /**
-   * Let the router pick the model for this run, if one is configured.
+   * Let the router pick the model for this session, if one is configured.
+   *
+   * Once per session, on its first prompt; a resumed session keeps the model
+   * it was routed to. The REPL runs each prompt as a run of its own, so
+   * routing per run switched models inside one conversation, and every
+   * switch throws away the prompt cache (caches are per model) and, on
+   * current Claude models, the thinking the other model wrote.
    *
    * Mutates `config.model` rather than threading a per-call model through
-   * every API path, because the decision is made once per run and every call
-   * in that run should agree with it. It emits nothing: the routing event
-   * belongs to whatever installed the router, and the CLI logs it there.
+   * every API path, because every call in the session should agree with
+   * it. It emits nothing: the routing event belongs to whatever installed
+   * the router, and the CLI logs it there.
    */
-  private async route(prompt: string): Promise<void> {
+  private async route(prompt: string, session: Session): Promise<void> {
     if (!this.router) return;
+    if (session.messages.length > 0) {
+      this.config.model = session.metadata.model;
+      return;
+    }
 
     const verdict = await this.router(prompt);
     if (verdict.model !== this.config.model) {
@@ -687,6 +697,7 @@ export class Agent {
       );
     }
     this.config.model = verdict.model;
+    session.metadata.model = verdict.model;
   }
 
   private resolveTools(): Tool[] {

@@ -149,7 +149,7 @@ console.log(result.text, result.usage.estimatedCostUsd);
 | `--allow-all` / `--ask` / `--read-only` | permission preset (default `--ask`) |
 | `--gate [backend]` | score the `ask` cases: `llm` (default) or `allowlist` (offline) |
 | `--gate-threshold <n>` | auto-allow below this P; default 0.20, model-specific |
-| `--cheap-model <id>` | route prompts between this and `--model`; needs `--gate` |
+| `--cheap-model <id>` | route each new session between this and `--model`; needs `--gate` |
 | `--effort <level>` | `low` … `max`, sent as `output_config.effort`; unset, the model's own default |
 | `--compact-at <n>` | compact once a prompt reaches n tokens, or `off`; default 80% of the window, ≤150K |
 
@@ -369,9 +369,15 @@ closed depends on which direction costs you something you cannot get back.
 snake arena below needed four outcomes — but two tiers need only one question. A third
 tier is what would move the router onto it.
 
-**It decides once, before turn one.** Routing every turn would save more, since most
-turns are "read this tool output and continue" — but it would also hand one model's
-half-finished reasoning to another mid-conversation. That is untested and not shipped.
+**It decides once per session, on its first prompt.** Routing every turn would save more,
+since most turns are "read this tool output and continue" — but it would also hand one
+model's half-finished reasoning to another mid-conversation. The REPL used to come close
+to that without meaning to: each prompt is a run of its own, and each run routed afresh,
+so one conversation could move between models from one prompt to the next. Every switch
+throws away the prompt cache, which is kept per model, and on current Claude models the
+thinking blocks the other model wrote. A resumed session now keeps the model it was routed
+to. The cost rows below price each request's tier on its own, so they never counted that
+loss.
 
 #### What it measures, and what it cannot
 

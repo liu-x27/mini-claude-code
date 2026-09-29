@@ -1769,6 +1769,20 @@ await checkAsync("reasoning_content：兼容端点流回的推理存进历史，
   if (JSON.stringify(sent.messages).includes("think hard")) throw new Error("兼容端点的推理不该发给 Anthropic");
 });
 
+await checkAsync("路由：每个会话只在第一问时选一次模型，续跑沿用，不在对话中途换模型", async () => {
+  const dir = path.join(scratch, "route");
+  let routed = 0;
+  const router = async () => (routed++, { model: "cheap-model", downgraded: true, probability: 0.01, reason: "easy" });
+  const models: string[] = [];
+  const answer = () => new ScriptedClient([async (req) => (models.push(req.model), said("ok"))]);
+  const r1 = await scriptedAgent(answer(), { persistSessions: true, sessionDir: dir, model: "strong-model", router }).agent.run("easy one");
+  await scriptedAgent(answer(), { persistSessions: true, sessionDir: dir, model: "strong-model", router, resumeSessionId: r1.sessionId }).agent.run("now a hard one");
+  if (routed !== 1) throw new Error(`同一会话路由了 ${routed} 次`);
+  if (models.join(",") !== "cheap-model,cheap-model") throw new Error(`用的模型: ${models.join(",")}`);
+  await scriptedAgent(answer(), { persistSessions: true, sessionDir: dir, model: "strong-model", router }).agent.run("new session");
+  if ((routed as number) !== 2) throw new Error("新会话应该重新路由");
+});
+
 await checkAsync("effort：设了才发 output_config.effort，没设就不发", async () => {
   const base: ModelRequest = {
     model: "claude-opus-5-5",

@@ -371,7 +371,7 @@ ${chalk.bold("Options")}
       --gate-threshold <n>
                          Auto-allow below this P(destructive). Model-specific
                          - measure with npm run eval:risk-gate before changing
-      --cheap-model <id> Route each prompt between this and --model, using the
+      --cheap-model <id> Route each new session between this and --model, using the
                          same judge. Needs --gate to supply one.
       --effort <level>   low | medium | high | xhigh | max, sent as
                          output_config.effort (default: the model's own)
