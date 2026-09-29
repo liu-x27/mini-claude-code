@@ -9,6 +9,9 @@ import type {
   RiskGate,
 } from "../types.js";
 import { logger } from "../utils/logger.js";
+import { ruleMatches, specificity } from "./rules.js";
+
+export { parseRule } from "./rules.js";
 
 /**
  * Evaluates whether a tool call is permitted, based on configured rules.
@@ -39,7 +42,7 @@ export class PermissionSystem {
    * In "ask" mode, interactively prompts the user.
    */
   async check(request: PermissionRequest): Promise<boolean> {
-    const mode = this.resolveMode(request.toolName);
+    const mode = this.resolveMode(request);
 
     switch (mode) {
       case "allow":
@@ -83,15 +86,21 @@ export class PermissionSystem {
     return this.promptUser(request);
   }
 
-  private resolveMode(toolName: string): PermissionMode {
-    // Specific rule takes precedence over wildcard
-    for (const rule of this.context.rules) {
-      if (rule.tool === toolName) return rule.mode;
-    }
-    for (const rule of this.context.rules) {
-      if (rule.tool === "*") return rule.mode;
-    }
-    return this.context.defaultMode;
+  /**
+   * The mode for one call. A matching deny always wins, whatever else
+   * matches: a rule the user wrote to forbid something cannot be outweighed.
+   * Otherwise the most specific matching rule decides — a pattern over a
+   * tool, a tool over `*` — and among equals the one listed first, which is
+   * why an answer of "always" is put at the front.
+   */
+  private resolveMode(request: PermissionRequest): PermissionMode {
+    const target = { toolName: request.toolName, input: request.input, cwd: request.cwd ?? process.cwd() };
+    const matching = this.context.rules
+      .map((rule, index) => ({ rule, index }))
+      .filter(({ rule }) => ruleMatches(rule, target));
+    if (matching.some(({ rule }) => rule.mode === "deny")) return "deny";
+    matching.sort((a, b) => specificity(b.rule) - specificity(a.rule) || a.index - b.index);
+    return matching[0]?.rule.mode ?? this.context.defaultMode;
   }
 
   /**
@@ -111,7 +120,7 @@ export class PermissionSystem {
   }
 
   private async promptNow(request: PermissionRequest): Promise<boolean> {
-    const settled = this.resolveMode(request.toolName);
+    const settled = this.resolveMode(request);
     if (settled !== "ask") return settled === "allow";
 
     const decision = await this.prompt(request);
@@ -204,13 +213,18 @@ export const PermissionPresets = {
     rules: [],
   }),
 
-  /** Ask before running Bash and file writes */
+  /**
+   * Ask before running Bash, writing files, and fetching a URL. WebFetch used
+   * to run unasked, which with Read unasked too left one path from a secret on
+   * disk to any server, with no prompt on the way.
+   */
   askDangerous: (): Partial<PermissionContext> => ({
     defaultMode: "allow",
     rules: [
       { tool: "Bash", mode: "ask" },
       { tool: "Write", mode: "ask" },
       { tool: "Edit", mode: "ask" },
+      { tool: "WebFetch", mode: "ask" },
     ],
   }),
 

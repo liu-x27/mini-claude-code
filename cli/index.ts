@@ -37,7 +37,7 @@ import * as readline from "node:readline";
 import chalk from "chalk";
 import { Agent } from "../src/agent.js";
 import { AllowlistJudge, createModelRouter, createRiskGate, LlmJudge } from "xavierjev";
-import { PermissionPresets, parseDecision } from "../src/permissions/index.js";
+import { PermissionPresets, parseDecision, parseRule } from "../src/permissions/index.js";
 import { SessionManager } from "../src/session/manager.js";
 import { globalRegistry, registerBuiltinTools } from "../src/tools/index.js";
 import type {
@@ -47,6 +47,7 @@ import type {
   ModelRouter,
   PermissionContext,
   PermissionPrompt,
+  PermissionRule,
   RiskGate,
 } from "../src/types.js";
 import { addCost } from "../src/utils/cost.js";
@@ -164,6 +165,8 @@ interface CliOptions {
   model: ModelId;
   cwd: string;
   preset: PermissionPreset;
+  /** From --allow and --deny, ahead of the preset's own rules. */
+  rules: PermissionRule[];
   gate: GateBackend;
   /**
    * Auto-allow threshold for the gate. Undefined means the library default.
@@ -193,6 +196,7 @@ function parseArgs(argv: string[]): CliOptions {
     model: (process.env.AGENT_MODEL as ModelId | undefined) ?? "claude-opus-5",
     cwd: process.cwd(),
     preset: "ask",
+    rules: [],
     gate: "off",
     gateThreshold: undefined,
     cheapModel: undefined,
@@ -242,6 +246,17 @@ function parseArgs(argv: string[]): CliOptions {
       case "--read-only":
         opts.preset = "read-only";
         break;
+      case "--allow":
+      case "--deny": {
+        const spec = next();
+        try {
+          opts.rules.push(parseRule(spec, arg === "--allow" ? "allow" : "deny"));
+        } catch (err) {
+          console.error(chalk.red(err instanceof Error ? err.message : String(err)));
+          process.exit(1);
+        }
+        break;
+      }
       case "--gate": {
         // Optional value: bare --gate takes the judge backend. It used to
         // take the offline allow-list, on the strength of that list clearing
@@ -366,6 +381,11 @@ ${chalk.bold("Options")}
       --allow-all        Never ask before running a tool
       --ask              Ask before Bash / Write / Edit (default)
       --read-only        Deny Bash / Write / Edit outright
+      --allow <rule>     Allow what a rule covers without asking, e.g.
+                         "Bash(npm test *)", "Edit(src/**)",
+                         "WebFetch(domain:docs.python.org)"; repeatable
+      --deny <rule>      Refuse what a rule covers, e.g. "Read(~/.ssh/**)";
+                         a deny always wins; repeatable
       --gate [backend]   Let a judge clear the easy "ask" cases
                          (allowlist = offline, default; llm = needs a key)
       --gate-threshold <n>
@@ -501,6 +521,7 @@ class ReplState {
   model: ModelId;
   cwd: string;
   preset: PermissionPreset;
+  rules: PermissionRule[];
   gateBackend: GateBackend;
   gateThreshold: number | undefined;
   maxTurns: number;
@@ -527,6 +548,7 @@ class ReplState {
     this.model = opts.model;
     this.cwd = opts.cwd;
     this.preset = opts.preset;
+    this.rules = opts.rules;
     this.gateBackend = opts.gate;
     this.gateThreshold = opts.gateThreshold;
     this.maxTurns = opts.maxTurns;
@@ -609,6 +631,7 @@ class ReplState {
       ...(this.compactAt !== undefined ? { compactAt: this.compactAt } : {}),
       permissions: {
         ...resolvePreset(this.preset),
+        rules: [...this.rules, ...(resolvePreset(this.preset).rules ?? [])],
         ...(this.prompt ? { prompt: this.prompt } : {}),
         ...(this.gate ? { gate: this.gate } : {}),
       },

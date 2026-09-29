@@ -579,6 +579,7 @@ export class Agent {
       input,
       description: tool.summarize(input),
       toolUseId,
+      cwd: context.cwd,
     });
     if (!allowed) {
       return refuse("permission denied", `Permission denied for tool: ${tool.name}`);

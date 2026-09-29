@@ -51,6 +51,7 @@ export {
   PermissionPresets,
   stdinPrompt,
   parseDecision,
+  parseRule,
 } from "./permissions/index.js";
 
 // Judge — the decision layer in front of the permission prompt

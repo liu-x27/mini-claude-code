@@ -147,6 +147,7 @@ console.log(result.text, result.usage.estimatedCostUsd);
 | `-C, --cwd <path>` | working directory for file and shell tools |
 | `--resume <id>` | continue a saved session |
 | `--allow-all` / `--ask` / `--read-only` | permission preset (default `--ask`) |
+| `--allow <rule>` / `--deny <rule>` | e.g. `"Bash(npm test *)"`, `"Read(~/.ssh/**)"`; repeatable, a deny always wins |
 | `--gate [backend]` | score the `ask` cases: `llm` (default) or `allowlist` (offline) |
 | `--gate-threshold <n>` | auto-allow below this P; default 0.20, model-specific |
 | `--cheap-model <id>` | route each new session between this and `--model`; needs `--gate` |
@@ -194,8 +195,14 @@ and `disallowedTools`. Bash runs in bash — Git Bash on Windows, cmd.exe only w
 none, and the tool's description tells the model which (`AGENT_SHELL` names another).
 Output that is not UTF-8 is decoded with the console's code page, line by line.
 
-**Permissions** (`src/permissions/`) resolve each call to `allow`, `ask`, or `deny` by
-most-specific-rule-wins, with presets for read-only and ask-before-dangerous. `ask` goes
+**Permissions** (`src/permissions/`) resolve each call to `allow`, `ask`, or `deny`, with
+presets for read-only and ask-before-dangerous (Bash, Write, Edit and WebFetch). Rules use
+Claude Code's syntax — `Bash(npm test *)`, `Read(~/.ssh/**)` (which covers Glob and Grep
+too), `Edit(src/**)` (and Write), `WebFetch(domain:docs.python.org)` — through `parseRule`
+or `--allow` / `--deny`. A matching deny always wins; otherwise the most specific rule
+does, a pattern over a tool over `*`. An allow rule matches only a simple command, so
+allowing `npm test *` does not allow what follows an `&&`, while a deny matches any part of
+a compound one. `ask` goes
 through an injectable `PermissionPrompt`, so the caller decides how to reach the user —
 the CLI reuses its own line reader, and the server sends the question out over the SSE
 stream and parks the tool call on a promise until a separate `POST /api/permission`

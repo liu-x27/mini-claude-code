@@ -93,7 +93,14 @@ export type {
 export interface PermissionRule {
   tool: string; // tool name or "*" wildcard
   mode: PermissionMode;
-  /** Optional glob pattern for file-based tools */
+  /**
+   * What the rule is about, in Claude Code's syntax (`parseRule` reads the
+   * whole `Tool(pattern)` form): a command pattern for Bash (`npm test *`), a
+   * path glob for Read/Glob/Grep and Edit/Write (`src/**`, `~/.ssh/**`), or
+   * `domain:example.com` for WebFetch. Without one the rule covers the tool.
+   */
+  pattern?: string;
+  /** The old name for `pattern`, which it used to be declared as and was never read. */
   pathPattern?: string;
 }
 
