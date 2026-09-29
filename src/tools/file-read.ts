@@ -10,6 +10,7 @@ interface FileReadInput {
 }
 
 const MAX_LINES = 2000;
+const MAX_LINE_CHARS = 2000;
 const MAX_BYTES = 2 * 1024 * 1024; // 2 MB
 
 /**
@@ -71,8 +72,18 @@ export class FileReadTool extends Tool<FileReadInput> {
     const maxLines = input.limit ?? MAX_LINES;
     const slice = lines.slice(startLine - 1, startLine - 1 + maxLines);
 
+    // A minified bundle is one line of megabytes, which MAX_LINES does nothing
+    // about. The `\r` of a CRLF file is dropped from the display; Edit matches
+    // either ending.
     const numbered = slice
-      .map((line, i) => `${String(startLine + i).padStart(4, " ")}\t${line}`)
+      .map((raw, i) => {
+        const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
+        const shown =
+          line.length > MAX_LINE_CHARS
+            ? `${line.slice(0, MAX_LINE_CHARS)}… [line truncated: ${line.length.toLocaleString("en-US")} characters]`
+            : line;
+        return `${String(startLine + i).padStart(4, " ")}\t${shown}`;
+      })
       .join("\n");
 
     const totalLines = lines.length;

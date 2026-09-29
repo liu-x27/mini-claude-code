@@ -13,6 +13,8 @@ import { FileWriteTool } from "../src/tools/file-write.js";
 import { FileEditTool } from "../src/tools/file-edit.js";
 import { GlobTool } from "../src/tools/glob.js";
 import { buildRgArgs, GrepTool } from "../src/tools/grep.js";
+import { decodeOutput, resolveShell } from "../src/tools/shell.js";
+import { MAX_TOOL_OUTPUT_CHARS } from "../src/utils/truncate.js";
 import { PermissionSystem, PermissionPresets } from "../src/permissions/index.js";
 import {
   AllowlistJudge,
@@ -1259,6 +1261,42 @@ await checkAsync("Grep：注入载荷不被执行（有 rg 走 rg，没有走 JS
   await tool.execute({ pattern: "hello", glob: '*" & echo pwned> pwned.txt & rem "' }, { ...ctx, cwd: dir });
   await tool.execute({ pattern: "$(echo pwned > pwned.txt)" }, { ...ctx, cwd: dir });
   if (await exists(path.join(dir, "pwned.txt"))) throw new Error("注入的命令被执行了");
+});
+
+await checkAsync("Bash 输出有上限：300 万字符只交回头尾，结尾还在", async () => {
+  const r = await new BashTool().execute(
+    { command: `node -e "process.stdout.write('x'.repeat(3000000) + 'THE-END')"` },
+    ctx,
+  );
+  if (r.type !== "success") throw new Error(r.message);
+  if (r.output.length > MAX_TOOL_OUTPUT_CHARS + 200) throw new Error(`交回了 ${r.output.length} 个字符`);
+  if (!r.output.includes("omitted") || !r.output.includes("THE-END")) throw new Error("应该标出省略，并保留结尾");
+});
+
+await checkAsync("Read：超长的单行截断，CRLF 的 \\r 不显示", async () => {
+  const file = path.join(scratch, "long.js");
+  await fs.writeFile(file, `${"a".repeat(1_000_000)}\r\nshort\r\n`);
+  const r = await new FileReadTool().execute({ file_path: file }, ctx);
+  if (r.type !== "success") throw new Error(r.message);
+  if (r.output.length > 5000 || !r.output.includes("line truncated")) throw new Error(`输出 ${r.output.length} 个字符`);
+  if (r.output.includes("\r")) throw new Error("行尾的 \\r 应该去掉");
+});
+
+await checkAsync("Windows 上 Bash 工具用的是 bash（找得到 Git Bash 时）", async () => {
+  const shell = resolveShell();
+  if (process.platform !== "win32" || shell.kind !== "bash") {
+    console.log(chalk.gray(`    跳过：${process.platform} / ${shell.kind}`));
+    return;
+  }
+  const r = await new BashTool().execute({ command: "export X=42 && echo $X && ls -d ." }, ctx);
+  if (r.type !== "success" || !r.output.includes("42")) throw new Error(r.type === "success" ? r.output : r.message);
+  if (!new BashTool().description.includes("Git Bash")) throw new Error("工具说明应告诉模型用的是 Git Bash");
+});
+
+check("非 UTF-8 的输出按控制台代码页逐行解码（GBK 与 UTF-8 混排）", () => {
+  const gbk = Buffer.from("b2bbcac7c4dab2bfbbf2cde2b2bfc3fcc1ee", "hex");
+  const text = decodeOutput(Buffer.concat([Buffer.from("ok ✓\n", "utf8"), gbk]), "gbk");
+  if (text !== "ok ✓\n不是内部或外部命令") throw new Error(`解码成: ${JSON.stringify(text)}`);
 });
 
 await checkAsync("Edit：CRLF 文件用 LF 写 old_string 也能改，改完仍是 CRLF", async () => {
