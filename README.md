@@ -165,7 +165,8 @@ concurrently, capped by `AGENT_MAX_CONCURRENT_TOOLS`; Bash, Write and Edit wait 
 came before them and run one at a time, in the order asked. Permission prompts queue, so
 the user is asked one thing at a time. Each call's input is checked against its tool's
 schema before anything else, and each result the model sees is capped at 40,000
-characters (`AGENT_MAX_TOOL_OUTPUT`), start and end kept. A reply that max_tokens cuts off
+characters (`AGENT_MAX_TOOL_OUTPUT`), start and end kept; the whole text is saved to a
+file the cut names, so the middle is one Read away (Read itself says to use `offset`). A reply that max_tokens cuts off
 in the middle of a tool call is asked again with twice the room, up to 64,000; one that
 stays cut off, or ends in a refusal, is neither run nor saved, since a `tool_use` without
 its result makes every later request fail. `run(prompt, { signal })` can be aborted, and

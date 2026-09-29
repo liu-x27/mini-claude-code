@@ -33,6 +33,19 @@ export abstract class Tool<TInput extends object = Record<string, unknown>> {
   readonly dangerous: boolean = false;
 
   /**
+   * How a result longer than the output limit is cut: the share of the budget
+   * kept from the start. The rest of the text is saved to a file whose path
+   * the model is given.
+   */
+  readonly outputHeadShare: number = 0.5;
+
+  /**
+   * Said instead of saving the whole text, for a tool whose output can simply
+   * be asked for again in pieces.
+   */
+  readonly rereadHint: string | undefined = undefined;
+
+  /**
    * Execute the tool with the given input.
    * @param input - Input that has passed `validate()` against `inputSchema`
    * @param context - Runtime context (cwd, session info, permissions)

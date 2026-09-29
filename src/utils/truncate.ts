@@ -19,11 +19,18 @@ function readLimit(raw: string | undefined, fallback: number): number {
  * `headShare` is the fraction of the budget spent on the start. Command output
  * usually carries its verdict at the end, so the shell keeps more of the tail;
  * a file or a search result is read from the top, so the default is even.
+ * `note`, when given, goes in the marker: where the rest can be found.
  */
-export function truncateMiddle(text: string, max: number = MAX_TOOL_OUTPUT_CHARS, headShare = 0.5): string {
+export function truncateMiddle(
+  text: string,
+  max: number = MAX_TOOL_OUTPUT_CHARS,
+  headShare = 0.5,
+  note?: string,
+): string {
   if (text.length <= max) return text;
   const head = Math.floor(max * headShare);
   const tail = max - head;
   const omitted = text.length - head - tail;
-  return `${text.slice(0, head)}\n\n[… ${omitted.toLocaleString("en-US")} characters omitted …]\n\n${text.slice(text.length - tail)}`;
+  const marker = `[… ${omitted.toLocaleString("en-US")} characters omitted${note ? `; ${note}` : ""} …]`;
+  return `${text.slice(0, head)}\n\n${marker}\n\n${text.slice(text.length - tail)}`;
 }

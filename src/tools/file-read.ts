@@ -24,6 +24,8 @@ export class FileReadTool extends Tool<FileReadInput> {
     "Use `offset` and `limit` to read specific line ranges for large files. " +
     "Supports text files; binary files return a summary instead.";
 
+  override readonly rereadHint = "read the rest with offset and limit";
+
   readonly inputSchema = {
     type: "object" as const,
     properties: {

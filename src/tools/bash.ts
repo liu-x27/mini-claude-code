@@ -1,6 +1,6 @@
 import * as path from "node:path";
 import type { ToolContext, ToolResult } from "../types.js";
-import { MAX_TOOL_OUTPUT_CHARS, truncateMiddle } from "../utils/truncate.js";
+import { MAX_TOOL_OUTPUT_CHARS } from "../utils/truncate.js";
 import { Tool } from "./base.js";
 import { resolveShell, runCommand, type Shell } from "./shell.js";
 
@@ -21,6 +21,8 @@ export class BashTool extends Tool<BashInput> {
   readonly name = "Bash";
   readonly description: string;
   override readonly dangerous = true;
+  // The tail of a command's output usually says whether it worked, so it keeps the larger share when cut.
+  override readonly outputHeadShare = 0.25;
 
   readonly inputSchema = {
     type: "object" as const,
@@ -54,19 +56,18 @@ export class BashTool extends Tool<BashInput> {
     const run = await runCommand(input.command, { cwd: workDir, timeoutMs: timeout });
     if (run.spawnError) return { type: "error", message: `could not start the shell: ${run.spawnError}` };
 
-    // The tail of a command's output usually says whether it worked, so it gets the larger share.
-    const trim = (text: string) => truncateMiddle(text, MAX_TOOL_OUTPUT_CHARS, 0.25);
+    // Whole, as far as the capture kept it: the agent loop cuts what the model sees and saves the rest.
     const stdout = run.stdout.trim();
     const stderr = run.stderr.trim();
     const parts = [stdout && `stdout:\n${stdout}`, stderr && `stderr:\n${stderr}`].filter(Boolean);
 
     if (run.timedOut) {
-      return { type: "error", message: trim([...parts, `timed out after ${timeout} ms; the command was killed`].join("\n\n")) };
+      return { type: "error", message: [...parts, `timed out after ${timeout} ms; the command was killed`].join("\n\n") };
     }
     if (run.code !== 0) {
-      return { type: "error", message: trim([...parts, `exit code: ${run.code ?? run.signal ?? "unknown"}`].join("\n")) };
+      return { type: "error", message: [...parts, `exit code: ${run.code ?? run.signal ?? "unknown"}`].join("\n") };
     }
-    return { type: "success", output: trim(parts.join("\n\n") || "(no output)") };
+    return { type: "success", output: parts.join("\n\n") || "(no output)" };
   }
 
   override summarize(input: BashInput): string {
@@ -87,6 +88,6 @@ function describe(shell: Shell): string {
     "Use for running scripts, installing packages, running tests, git operations, etc.",
     where,
     "Prefer short, composable commands. Avoid interactive commands: stdin is closed.",
-    `Output longer than ${limit} characters is cut in the middle.`,
+    `Output longer than ${limit} characters is cut in the middle, and the whole of it saved to a file you can read.`,
   ].join(" ");
 }

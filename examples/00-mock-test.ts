@@ -1474,14 +1474,30 @@ await checkAsync("工具执行期间进程若死掉：盘上的会话可续，�
   if (danglingToolUse(mid.messages)) throw new Error("执行期间盘上的会话不可续");
 });
 
-await checkAsync("Bash 输出有上限：300 万字符只交回头尾，结尾还在", async () => {
-  const r = await new BashTool().execute(
-    { command: `node -e "process.stdout.write('x'.repeat(3000000) + 'THE-END')"` },
-    ctx,
-  );
-  if (r.type !== "success") throw new Error(r.message);
-  if (r.output.length > MAX_TOOL_OUTPUT_CHARS + 200) throw new Error(`交回了 ${r.output.length} 个字符`);
-  if (!r.output.includes("omitted") || !r.output.includes("THE-END")) throw new Error("应该标出省略，并保留结尾");
+await checkAsync("工具输出有上限：300 万字符只给模型头尾，全文存进文件并告诉它路径", async () => {
+  const client = new ScriptedClient([
+    calls(["big", "Bash", { command: `node -e "process.stdout.write('x'.repeat(3000000) + 'THE-END')"` }]),
+    said("done"),
+  ]);
+  await new Agent({ client, persistSessions: false, permissions: PermissionPresets.allowAll() }).run("go");
+  const content = String(toolResultsIn(client.seen[1]!)[0]?.content);
+  if (content.length > MAX_TOOL_OUTPUT_CHARS + 400) throw new Error(`交回了 ${content.length} 个字符`);
+  if (!content.includes("THE-END")) throw new Error("结尾应该保留");
+  const file = /whole output is in (.+?) …\]/.exec(content)?.[1];
+  if (!file) throw new Error(`没说全文在哪: ${content.slice(9_000, 10_400)}`);
+  const whole = await fs.readFile(file, "utf-8");
+  if (!whole.includes("THE-END") || whole.length < 3_000_000) throw new Error(`文件里只有 ${whole.length} 个字符`);
+  await fs.rm(path.dirname(file), { recursive: true, force: true });
+});
+
+await checkAsync("Read 的结果超长时不另存一份，告诉模型用 offset/limit 分段读", async () => {
+  const file = path.join(scratch, "many-lines.txt");
+  await fs.writeFile(file, `${"0123456789".repeat(6)}\n`.repeat(2500));
+  const client = new ScriptedClient([calls(["r", "Read", { file_path: file }]), said("done")]);
+  await new Agent({ client, persistSessions: false, permissions: PermissionPresets.allowAll() }).run("go");
+  const content = String(toolResultsIn(client.seen[1]!)[0]?.content);
+  if (content.length > MAX_TOOL_OUTPUT_CHARS + 400) throw new Error(`交回了 ${content.length} 个字符`);
+  if (!content.includes("offset and limit") || content.includes("whole output is in")) throw new Error("提示不对");
 });
 
 await checkAsync("Read：超长的单行截断，CRLF 的 \\r 不显示", async () => {

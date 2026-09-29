@@ -1,4 +1,6 @@
+import * as fs from "node:fs/promises";
 import * as os from "node:os";
+import * as path from "node:path";
 import type Anthropic from "@anthropic-ai/sdk";
 import chalk from "chalk";
 import { AnthropicClient } from "./model/anthropic.js";
@@ -29,7 +31,7 @@ import type {
 } from "./types.js";
 import { addCost, estimateCost, formatCost } from "./utils/cost.js";
 import { logger } from "./utils/logger.js";
-import { truncateMiddle } from "./utils/truncate.js";
+import { MAX_TOOL_OUTPUT_CHARS, truncateMiddle } from "./utils/truncate.js";
 
 // Ensure built-in tools are registered
 registerBuiltinTools();
@@ -467,7 +469,7 @@ export class Agent {
     const start = Date.now();
     const attempt = async (): Promise<ToolResult> => {
       try {
-        return capOutput(await tool.execute(input, context));
+        return await this.capOutput(tool, toolUseId, context.sessionId, await tool.execute(input, context));
       } catch (err) {
         return { type: "error", message: `${tool.name} threw: ${err instanceof Error ? err.message : String(err)}` };
       }
@@ -497,6 +499,19 @@ export class Agent {
       content: toolResult.type === "success" ? toolResult.output : `Error: ${toolResult.message}`,
       is_error: toolResult.type === "error",
     };
+  }
+
+  /**
+   * A result as the model sees it: at most MAX_TOOL_OUTPUT_CHARS, start and
+   * end kept. The whole text goes to a file the note names, so the middle is
+   * one Read away — unless the tool can simply be asked again in pieces.
+   */
+  private async capOutput(tool: Tool, toolUseId: string, sessionId: string, result: ToolResult): Promise<ToolResult> {
+    const text = result.type === "success" ? result.output : result.message;
+    if (text.length <= MAX_TOOL_OUTPUT_CHARS) return result;
+    const note = tool.rereadHint ?? (await saveFullOutput(sessionId, toolUseId, text));
+    const cut = truncateMiddle(text, MAX_TOOL_OUTPUT_CHARS, tool.outputHeadShare, note);
+    return result.type === "success" ? { type: "success", output: cut } : { type: "error", message: cut };
   }
 
   /** The last few calls, as the stop judge sees them. */
@@ -711,11 +726,18 @@ function stopNotice(stopReason: string, maxTokens: number): string | undefined {
   }
 }
 
-/** A tool result as the model sees it: at most MAX_TOOL_OUTPUT_CHARS, head and tail kept. */
-function capOutput(result: ToolResult): ToolResult {
-  return result.type === "success"
-    ? { type: "success", output: truncateMiddle(result.output) }
-    : { type: "error", message: truncateMiddle(result.message) };
+/** Where the whole of a cut result is kept, or undefined if it could not be written. */
+async function saveFullOutput(sessionId: string, toolUseId: string, text: string): Promise<string | undefined> {
+  const safe = (s: string) => s.replace(/[^\w-]/g, "_");
+  const dir = path.join(process.env.AGENT_OUTPUT_DIR || path.join(os.tmpdir(), "agent-app-output"), safe(sessionId));
+  const file = path.join(dir, `${safe(toolUseId)}.txt`);
+  try {
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(file, text, "utf-8");
+    return `the whole output is in ${file}`;
+  } catch {
+    return undefined;
+  }
 }
 
 function sumUsage(a: AgentUsage, b: AgentUsage): AgentUsage {
