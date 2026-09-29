@@ -261,6 +261,14 @@ export interface AgentConfig {
   projectInstructions?: boolean;
 
   /**
+   * Offer the Agent Skills found under `.agents/skills`, `.claude/skills` and
+   * `.agent-app/skills` (in the project, then the home directory): a new
+   * session is told their names and descriptions, and a Skill tool loads one
+   * when the model asks. Default: true.
+   */
+  skills?: boolean;
+
+  /**
    * Compact the conversation when a model call's prompt reaches this many
    * tokens: the model summarises it, the full transcript is archived, and
    * the next call starts from the summary. Default: 80% of the model's

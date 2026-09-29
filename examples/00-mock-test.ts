@@ -1915,6 +1915,42 @@ await checkAsync("MCP：连上 stdio 服务，工具成为 mcp__服务__工具�
   }
 });
 
+await checkAsync("Skills：新会话只列名字和描述，Skill 工具按需读入正文；续跑不再列；可关", async () => {
+  const project = path.join(scratch, "skills-project");
+  const skillDir = path.join(project, ".agents", "skills", "pdf-tools");
+  await fs.mkdir(skillDir, { recursive: true });
+  await fs.writeFile(
+    path.join(skillDir, "SKILL.md"),
+    "---\nname: pdf-tools\ndescription: >\n  Extract text and tables from PDF files.\n  Use when the user mentions a PDF.\n---\n\n# PDF tools\n\nRun scripts/extract.py on the file.\n",
+  );
+  await fs.mkdir(path.join(project, ".claude", "skills", "broken"), { recursive: true });
+  await fs.writeFile(path.join(project, ".claude", "skills", "broken", "SKILL.md"), "no frontmatter, no description");
+  const dir = path.join(scratch, "skills-sessions");
+
+  let tools: string[] = [];
+  const c1 = new ScriptedClient([
+    async (req) => ((tools = req.tools.map((t) => t.name)), calls(["k", "Skill", { name: "pdf-tools" }])),
+    said("done"),
+  ]);
+  const r1 = await scriptedAgent(c1, { persistSessions: true, sessionDir: dir, cwd: project }).agent.run("summarise report.pdf");
+  const first = JSON.stringify(c1.seen[0]!.at(-1));
+  if (!first.includes("- pdf-tools: Extract text and tables from PDF files. Use when the user mentions a PDF.")) {
+    throw new Error(`技能列表: ${first.slice(0, 400)}`);
+  }
+  if (first.includes("broken") || first.includes("extract.py")) throw new Error("没有描述的不该列；正文不该提前放进来");
+  if (!tools.includes("Skill")) throw new Error("有技能时应提供 Skill 工具");
+  const loaded = String(toolResultsIn(c1.seen[1]!)[0]?.content);
+  if (!loaded.includes("Run scripts/extract.py") || !loaded.includes(skillDir)) throw new Error(`读入的正文: ${loaded}`);
+
+  const c2 = new ScriptedClient([async (req) => ((tools = req.tools.map((t) => t.name)), said("ok"))]);
+  await scriptedAgent(c2, { persistSessions: true, sessionDir: dir, cwd: project, resumeSessionId: r1.sessionId }).agent.run("again");
+  if (JSON.stringify(c2.seen[0]!.at(-1)).includes("pdf-tools") || !tools.includes("Skill")) throw new Error("续跑不再列技能，但工具要在");
+
+  const c3 = new ScriptedClient([async (req) => ((tools = req.tools.map((t) => t.name)), said("ok"))]);
+  await scriptedAgent(c3, { cwd: project, skills: false }).agent.run("go");
+  if (tools.includes("Skill") || JSON.stringify(c3.seen[0]).includes("pdf-tools")) throw new Error("关掉之后还提供了技能");
+});
+
 check("parseRule：读 Claude Code 的规则写法，写错就报错", () => {
   const r = parseRule("Bash(npm run test:* )", "allow");
   if (r.tool !== "Bash" || r.pattern !== "npm run test:*" || r.mode !== "allow") throw new Error(JSON.stringify(r));

@@ -213,6 +213,12 @@ server ran `defaultMode: "allow"` and executed every tool call without asking, w
 the one configuration the CLI never offered. It fails closed on a timeout and on the tab
 closing.
 
+**Skills** (`src/context/skills.ts`) follow the Agent Skills standard: a folder with a
+`SKILL.md` whose frontmatter gives a name and a description, under `.agents/skills`,
+`.claude/skills` or `.agent-app/skills`, in the project first and then the home directory.
+A new session is told each skill's name and description, a line apiece, and a `Skill` tool
+loads the instructions when the model asks for them (`skills: false` turns it off).
+
 **MCP** (`src/mcp/`): `connectMcpServers` takes Claude Code's `.mcp.json` shape — a
 command to spawn over stdio, or a streamable-HTTP URL — and wraps each server's tools as
 `mcp__<server>__<tool>`; the CLI takes `--mcp-config`. A server that fails to start is

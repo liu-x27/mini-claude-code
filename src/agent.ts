@@ -5,6 +5,7 @@ import type Anthropic from "@anthropic-ai/sdk";
 import chalk from "chalk";
 import { COMPACTION_PROMPT, compactedHistory, defaultCompactAt, renderTranscript } from "./context/compaction.js";
 import { loadProjectInstructions } from "./context/instructions.js";
+import { discoverSkills, SkillTool, skillsNote } from "./context/skills.js";
 import { type HookEvent, type HookInput, type HookOutcome, type HooksConfig, runHooks } from "./hooks/index.js";
 import { AnthropicClient } from "./model/anthropic.js";
 import type { ModelClient, ModelDelta, ModelResponse } from "./model/types.js";
@@ -93,6 +94,8 @@ export class Agent {
   private sessionId = "";
   /** Set when a hook answers `continue: false`: the run ends after the call in progress. */
   private hookStop: string | undefined;
+  /** Tools the agent adds to the registry's for a run: the Skill tool, when there are skills. */
+  private extraTools = new Map<string, Tool>();
 
   constructor(config: AgentConfig = {}, registry?: ToolRegistry) {
     this.client = config.client ?? new AnthropicClient();
@@ -113,6 +116,7 @@ export class Agent {
       subagents: config.subagents ?? {},
       enableCaching: config.enableCaching ?? true,
       projectInstructions: config.projectInstructions ?? true,
+      skills: config.skills ?? true,
       stream: config.stream ?? false,
     };
 
@@ -149,7 +153,11 @@ export class Agent {
    */
   async run(prompt: string, options: RunOptions = {}): Promise<AgentResult> {
     const { signal } = options;
-    const tools = this.resolveTools();
+    const skills = this.config.skills ? await discoverSkills(this.config.cwd) : [];
+    this.extraTools.clear();
+    // Tool<SkillInput> is a Tool: the registry holds its tools the same way.
+    if (skills.length > 0) this.extraTools.set("Skill", new SkillTool() as unknown as Tool);
+    const tools = [...this.resolveTools(), ...this.extraTools.values()];
     const session = await this.initSession();
     await this.emit({
       type: "session",
@@ -174,6 +182,7 @@ export class Agent {
     if (session.messages.length === 0 && this.config.projectInstructions) {
       const instructions = await loadProjectInstructions(this.config.cwd);
       if (instructions) notes.push(instructions);
+      if (skills.length > 0) notes.push(skillsNote(skills));
     }
     const environment = this.environmentLine();
     if (session.metadata.environment !== environment) notes.push(`[Environment: ${environment}]`);
@@ -579,7 +588,7 @@ export class Agent {
 
     for (const block of toolUseBlocks) {
       // An unknown tool counts as dangerous: it is refused, but in order.
-      if (this.registry.get(block.name)?.dangerous === false) {
+      if (this.lookup(block.name)?.dangerous === false) {
         together.push(block);
         continue;
       }
@@ -615,7 +624,7 @@ export class Agent {
       return { type: "tool_result" as const, tool_use_id: toolUseId, content, is_error: true };
     };
 
-    const tool = this.registry.get(block.name);
+    const tool = this.lookup(block.name);
     if (!tool) {
       logger.warn(`Unknown tool: ${block.name}`);
       return refuse("not registered", `Error: Tool "${block.name}" is not registered.`);
@@ -746,7 +755,7 @@ export class Agent {
   /** The last few calls, as the stop judge sees them. */
   private trace(records: ToolCallRecord[]): TracedCall[] {
     return records.slice(-8).map((r) => {
-      const tool = this.registry.get(r.toolName);
+      const tool = this.lookup(r.toolName);
       const ok = r.result.type === "success";
       const text = r.result.type === "success" ? r.result.output : r.result.message;
       return {
@@ -763,7 +772,7 @@ export class Agent {
   private describeCalls(blocks: Anthropic.ToolUseBlockParam[]): string {
     return blocks
       .map((b) => {
-        const tool = this.registry.get(b.name);
+        const tool = this.lookup(b.name);
         const input = b.input as Record<string, unknown>;
         try {
           return tool ? `${b.name}(${tool.summarize(input)})` : b.name;
@@ -803,6 +812,10 @@ export class Agent {
     }
     this.config.model = verdict.model;
     session.metadata.model = verdict.model;
+  }
+
+  private lookup(name: string): Tool | undefined {
+    return this.extraTools.get(name) ?? this.registry.get(name);
   }
 
   private resolveTools(): Tool[] {
