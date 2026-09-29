@@ -7,6 +7,7 @@ import { COMPACTION_PROMPT, compactedHistory, defaultCompactAt, renderTranscript
 import { loadProjectInstructions } from "./context/instructions.js";
 import { discoverSkills, SkillTool, skillsNote } from "./context/skills.js";
 import { GENERAL_PURPOSE, TaskTool } from "./tools/task.js";
+import { TodoWriteTool } from "./tools/todo.js";
 import { type HookEvent, type HookInput, type HookOutcome, type HooksConfig, runHooks } from "./hooks/index.js";
 import { AnthropicClient } from "./model/anthropic.js";
 import type { ModelClient, ModelDelta, ModelResponse } from "./model/types.js";
@@ -166,6 +167,7 @@ export class Agent {
     this.extraTools.clear();
     // Tool<SkillInput> is a Tool: the registry holds its tools the same way.
     if (skills.length > 0) this.offer(new SkillTool() as unknown as Tool);
+    this.offer(new TodoWriteTool() as unknown as Tool);
     if (this.depth === 0) {
       this.offer(new TaskTool(this.config.subagents, (type, task) => this.runSubagent(type, task)) as unknown as Tool);
     }
@@ -299,8 +301,14 @@ export class Agent {
             {
               cwd: this.config.cwd,
               sessionId: session.metadata.sessionId,
-              agentId: "main",
+              agentId: this.depth === 0 ? "main" : "subagent",
               permissions: this.permissions.getContext(),
+              todos: {
+                set: (items) => {
+                  session.metadata.todos = items;
+                  void this.emit({ type: "todos", todos: items });
+                },
+              },
             },
             signal,
           );

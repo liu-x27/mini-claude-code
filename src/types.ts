@@ -60,12 +60,20 @@ export interface JsonSchemaProperty {
 /** Result returned from a tool execution */
 export type ToolResult = { type: "success"; output: string } | { type: "error"; message: string };
 
+/** One item of the model's task list (the TodoWrite tool). */
+export interface TodoItem {
+  content: string;
+  status: "pending" | "in_progress" | "completed";
+}
+
 /** Execution context passed to each tool */
 export interface ToolContext {
   cwd: string;
   sessionId: string;
   agentId: string;
   permissions: PermissionContext;
+  /** Where TodoWrite keeps the task list: the session. */
+  todos?: { set(items: TodoItem[]): void };
 }
 
 // ─────────────────────────────────────────────
@@ -185,6 +193,8 @@ export interface SessionMetadata {
   contextTokens?: number;
   /** How many times this session has been compacted. */
   compactions?: number;
+  /** The task list the model last wrote with TodoWrite. */
+  todos?: TodoItem[];
 }
 
 export interface Session {
@@ -405,6 +415,8 @@ export type AgentEvent =
   | { type: "turn_retry"; turn: number; reason: string; maxTokens: number }
   /** The history was replaced by a summary; `transcript` is where the full one was archived. */
   | { type: "compacted"; turn: number; promptTokens: number; transcript: string | undefined }
+  /** The model rewrote its task list. */
+  | { type: "todos"; todos: TodoItem[] }
   /** Something a subagent the Task tool started did, for a host that wants to show it. */
   | { type: "subagent"; subagent: string; event: AgentEvent }
   | { type: "stop_check"; turn: number; verdict: StopVerdict }

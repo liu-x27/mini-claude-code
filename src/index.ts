@@ -40,6 +40,8 @@ export { FileEditTool } from "./tools/file-edit.js";
 export { GlobTool } from "./tools/glob.js";
 export { GrepTool } from "./tools/grep.js";
 export { WebFetchTool } from "./tools/web-fetch.js";
+export { TaskTool } from "./tools/task.js";
+export { TodoWriteTool } from "./tools/todo.js";
 
 // Session
 export { SessionManager } from "./session/manager.js";

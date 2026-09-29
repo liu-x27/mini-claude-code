@@ -1996,6 +1996,30 @@ await checkAsync("Task：自定义的子代理类型只拿到它允许的工具�
   if (tools.includes("Task")) throw new Error("disallowedTools 没去掉 Task");
 });
 
+await checkAsync("TodoWrite：整张清单每次重写，存进会话、发出事件；两个进行中就报错", async () => {
+  const dir = path.join(scratch, "todos");
+  const client = new ScriptedClient([
+    calls([
+      "t1",
+      "TodoWrite",
+      { todos: [{ content: "read the parser", status: "completed" }, { content: "fix the bug", status: "in_progress" }, { content: "run tests", status: "pending" }] },
+    ]),
+    calls(["t2", "TodoWrite", { todos: [{ content: "a", status: "in_progress" }, { content: "b", status: "in_progress" }] }]),
+    said("done"),
+  ]);
+  const { agent, events } = scriptedAgent(client, { persistSessions: true, sessionDir: dir });
+  const result = await agent.run("fix it");
+  const shown = String(toolResultsIn(client.seen[1]!)[0]?.content);
+  if (!shown.includes("[x] read the parser") || !shown.includes("[>] fix the bug") || !shown.includes("[ ] run tests")) {
+    throw new Error(`清单: ${shown}`);
+  }
+  if (!toolResultsIn(client.seen[2]!)[0]?.is_error) throw new Error("两个 in_progress 应该报错");
+  const ev = events.filter((e) => e.type === "todos");
+  if (ev.length !== 1) throw new Error(`todos 事件 ${ev.length} 个`);
+  const saved = await new SessionManager(dir).load(result.sessionId);
+  if (saved?.metadata.todos?.length !== 3 || saved.metadata.todos[1]?.status !== "in_progress") throw new Error("清单没存进会话");
+});
+
 check("parseRule：读 Claude Code 的规则写法，写错就报错", () => {
   const r = parseRule("Bash(npm run test:* )", "allow");
   if (r.tool !== "Bash" || r.pattern !== "npm run test:*" || r.mode !== "allow") throw new Error(JSON.stringify(r));

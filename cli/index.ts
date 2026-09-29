@@ -502,6 +502,13 @@ function attachRenderer(agent: Agent): void {
         console.log(chalk.gray(`   ${status} in ${event.durationMs}ms`));
         break;
       }
+      case "todos":
+        endStream();
+        for (const t of event.todos) {
+          const mark = t.status === "completed" ? "✔" : t.status === "in_progress" ? "▶" : "·";
+          console.log(chalk.gray(`   ${mark} ${t.content}`));
+        }
+        break;
       case "subagent":
         if (event.event.type === "tool_start") {
           endStream();

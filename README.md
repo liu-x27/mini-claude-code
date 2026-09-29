@@ -213,6 +213,10 @@ server ran `defaultMode: "allow"` and executed every tool call without asking, w
 the one configuration the CLI never offered. It fails closed on a timeout and on the tab
 closing.
 
+**TodoWrite** keeps the model's own task list for work with several steps: rewritten
+whole on each call, at most one item in progress, saved with the session, and shown as a
+checklist in the CLI.
+
 **Subagents**: a `Task` tool hands a self-contained task to a subagent with a fresh
 context and returns only its final answer, so a search across many files costs the
 conversation one result. `general-purpose` has every tool but Task; `subagents` in the
