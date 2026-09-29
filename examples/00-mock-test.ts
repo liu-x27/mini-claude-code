@@ -17,6 +17,9 @@ import { decodeOutput, resolveShell } from "../src/tools/shell.js";
 import { buildParams } from "../src/model/anthropic.js";
 import type { HookOutput } from "../src/hooks/index.js";
 import { connectMcpServers } from "../src/mcp/index.js";
+import * as acp from "@agentclientprotocol/sdk";
+import { serveAcp } from "../src/acp/index.js";
+import { Readable, Writable } from "node:stream";
 import { MAX_TOOL_OUTPUT_CHARS } from "../src/utils/truncate.js";
 import { PermissionSystem, PermissionPresets, parseRule } from "../src/permissions/index.js";
 import {
@@ -2085,6 +2088,115 @@ await checkAsync("CLI -p 的 json / stream-json：stdout 只有 JSON；退出码
     if (only.length !== 1 || (JSON.parse(only[0]!) as { type?: string }).type !== "result") throw new Error(`json 模式应只有一行结果: ${denied.out}`);
     if (!denied.err.includes("cannot ask")) throw new Error(`stderr 没说明为什么拒绝: ${denied.err.slice(0, 300)}`);
   } finally {
+    fake.closeAllConnections();
+    await new Promise((r) => fake.close(r));
+  }
+});
+
+/** 一对内存里的 ACP 流：编辑器一端、代理一端 */
+function acpPipe() {
+  const toClient = new TransformStream<Uint8Array>();
+  const toAgent = new TransformStream<Uint8Array>();
+  return {
+    agentSide: acp.ndJsonStream(toClient.writable, toAgent.readable),
+    clientSide: acp.ndJsonStream(toAgent.writable, toClient.readable),
+  };
+}
+
+await checkAsync("ACP：编辑器发 prompt，工具调用以 tool_call 推送、要问的去问编辑器、答案作为消息块送达", async () => {
+  const pipe = acpPipe();
+  const client = new ScriptedClient([calls(["b1", "Bash", { command: "echo acp-ok" }]), said("all done")]);
+  serveAcp(pipe.agentSide, { agent: { client, persistSessions: true, sessionDir: path.join(scratch, "acp-sessions") } });
+  const updates: acp.SessionNotification["update"][] = [];
+  let permissionAsked: string | undefined;
+  const editor = new acp.ClientSideConnection(
+    () => ({
+      requestPermission: async (p: acp.RequestPermissionRequest) => {
+        permissionAsked = p.toolCall.title ?? "";
+        return { outcome: { outcome: "selected", optionId: "allow" } };
+      },
+      sessionUpdate: async (n: acp.SessionNotification) => {
+        updates.push(n.update);
+      },
+    }),
+    pipe.clientSide,
+  );
+  await editor.initialize({ protocolVersion: acp.PROTOCOL_VERSION, clientCapabilities: {} });
+  const { sessionId } = await editor.newSession({ cwd: scratch, mcpServers: [] });
+  const res = await editor.prompt({ sessionId, prompt: [{ type: "text", text: "run the echo" }] });
+  if (res.stopReason !== "end_turn") throw new Error(`stopReason: ${res.stopReason}`);
+  if (!permissionAsked?.includes("echo acp-ok")) throw new Error(`权限问题: ${permissionAsked}`);
+  const kinds = updates.map((u) => u.sessionUpdate);
+  const call = updates.find((u) => u.sessionUpdate === "tool_call") as { kind?: string } | undefined;
+  const done = updates.find((u) => u.sessionUpdate === "tool_call_update" && "status" in u && u.status === "completed");
+  if (call?.kind !== "execute" || !JSON.stringify(done).includes("acp-ok")) throw new Error(`更新: ${kinds.join(",")}`);
+  const chunk = updates.find((u) => u.sessionUpdate === "agent_message_chunk");
+  if (!JSON.stringify(chunk).includes("all done")) throw new Error("最终回答没送到编辑器");
+});
+
+await checkAsync("ACP：session/cancel 中止正在跑的 prompt，stopReason 为 cancelled", async () => {
+  const pipe = acpPipe();
+  const client = new ScriptedClient([
+    (req) =>
+      new Promise((_, reject) => {
+        req.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+      }),
+  ]);
+  serveAcp(pipe.agentSide, { agent: { client, persistSessions: false } });
+  const editor = new acp.ClientSideConnection(
+    () => ({ requestPermission: async () => ({ outcome: { outcome: "cancelled" } }), sessionUpdate: async () => undefined }),
+    pipe.clientSide,
+  );
+  await editor.initialize({ protocolVersion: acp.PROTOCOL_VERSION, clientCapabilities: {} });
+  const { sessionId } = await editor.newSession({ cwd: scratch, mcpServers: [] });
+  const running = editor.prompt({ sessionId, prompt: [{ type: "text", text: "think forever" }] });
+  setTimeout(() => void editor.cancel({ sessionId }), 50);
+  const res = await running;
+  if (res.stopReason !== "cancelled") throw new Error(`stopReason: ${res.stopReason}`);
+});
+
+await checkAsync("ACP：真实的 CLI --acp 走 stdio，对着假的 Messages 端点跑通一问一答", async () => {
+  const fake = http.createServer((req, res) => {
+    req.resume();
+    req.on("end", () => {
+      const frame = (event: string, data: Record<string, unknown>) => `event: ${event}\ndata: ${JSON.stringify({ type: event, ...data })}\n\n`;
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.end(
+        frame("message_start", { message: { id: "m", type: "message", role: "assistant", model: "fake", content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 5, output_tokens: 1 } } }) +
+          frame("content_block_start", { index: 0, content_block: { type: "text", text: "" } }) +
+          frame("content_block_delta", { index: 0, delta: { type: "text_delta", text: "hello from acp" } }) +
+          frame("content_block_stop", { index: 0 }) +
+          frame("message_delta", { delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: 4 } }) +
+          frame("message_stop", {}),
+      );
+    });
+  });
+  await new Promise<void>((r) => fake.listen(0, "127.0.0.1", r));
+  const { port } = fake.address() as { port: number };
+  const child = spawn(process.execPath, [path.join(REPO_ROOT, "node_modules", "tsx", "dist", "cli.mjs"), path.join(REPO_ROOT, "cli", "index.ts"), "--acp", "--model", "fake"], {
+    cwd: REPO_ROOT,
+    env: { ...process.env, ANTHROPIC_API_KEY: "test", ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}`, AGENT_SESSION_DIR: path.join(scratch, "acp-cli-sessions") },
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  try {
+    const chunks: string[] = [];
+    const editor = new acp.ClientSideConnection(
+      () => ({
+        requestPermission: async () => ({ outcome: { outcome: "cancelled" } }),
+        sessionUpdate: async (n: acp.SessionNotification) => {
+          if (n.update.sessionUpdate === "agent_message_chunk" && n.update.content.type === "text") chunks.push(n.update.content.text);
+        },
+      }),
+      acp.ndJsonStream(Writable.toWeb(child.stdin), Readable.toWeb(child.stdout) as unknown as ReadableStream<Uint8Array>),
+    );
+    const init = await editor.initialize({ protocolVersion: acp.PROTOCOL_VERSION, clientCapabilities: {} });
+    if (init.agentInfo?.name !== "mini-claude-code") throw new Error(`initialize: ${JSON.stringify(init)}`);
+    const { sessionId } = await editor.newSession({ cwd: REPO_ROOT, mcpServers: [] });
+    const res = await editor.prompt({ sessionId, prompt: [{ type: "text", text: "hi" }] });
+    if (res.stopReason !== "end_turn" || chunks.join("") !== "hello from acp") throw new Error(`${res.stopReason}: ${JSON.stringify(chunks)}`);
+  } finally {
+    child.stdin.end();
+    await new Promise((r) => child.on("close", r));
     fake.closeAllConnections();
     await new Promise((r) => fake.close(r));
   }

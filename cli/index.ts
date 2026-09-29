@@ -34,6 +34,9 @@
 
 import { readFileSync } from "node:fs";
 import { stdin, stdout } from "node:process";
+import { Readable, Writable } from "node:stream";
+import { ndJsonStream } from "@agentclientprotocol/sdk";
+import { serveAcp } from "../src/acp/index.js";
 import * as readline from "node:readline";
 import chalk from "chalk";
 import { Agent } from "../src/agent.js";
@@ -42,6 +45,7 @@ import { PermissionPresets, parseDecision, parseRule } from "../src/permissions/
 import { SessionManager } from "../src/session/manager.js";
 import { globalRegistry, registerBuiltinTools } from "../src/tools/index.js";
 import type {
+  AgentConfig,
   AgentUsage,
   EffortLevel,
   ModelId,
@@ -180,6 +184,8 @@ interface CliOptions {
   mcpServers: Record<string, McpServerConfig> | undefined;
   /** How -p reports: text for a person, json or stream-json for a program. */
   outputFormat: OutputFormat;
+  /** Serve the Agent Client Protocol on stdio instead of the REPL. */
+  acp: boolean;
   gate: GateBackend;
   /**
    * Auto-allow threshold for the gate. Undefined means the library default.
@@ -213,6 +219,7 @@ function parseArgs(argv: string[]): CliOptions {
     hooks: undefined,
     mcpServers: undefined,
     outputFormat: "text",
+    acp: false,
     gate: "off",
     gateThreshold: undefined,
     cheapModel: undefined,
@@ -273,6 +280,9 @@ function parseArgs(argv: string[]): CliOptions {
         }
         break;
       }
+      case "--acp":
+        opts.acp = true;
+        break;
       case "--output-format": {
         const value = next();
         if (!(OUTPUT_FORMATS as string[]).includes(value)) {
@@ -461,6 +471,8 @@ ${chalk.bold("Options")}
       --compact-at <n>   Compact the conversation once a prompt reaches n
                          tokens, or "off" (default: 80% of the model's
                          context window, at most 150,000)
+      --acp              Serve the Agent Client Protocol on stdio, for an editor
+                         (Zed, JetBrains, ...) or a harness to drive
   -h, --help             Show this help
 
 ${chalk.bold("Slash commands (REPL)")}
@@ -702,6 +714,25 @@ class ReplState {
    * Build an Agent for the next turn, seeded with the current session so the
    * conversation carries over — see note 3 in the file header.
    */
+  /** What every Agent this CLI makes shares; buildAgent and the ACP server both start from it. */
+  agentConfig(): AgentConfig {
+    return {
+      model: this.model,
+      cwd: this.cwd,
+      maxTurns: this.maxTurns,
+      ...(this.effort ? { effort: this.effort } : {}),
+      ...(this.compactAt !== undefined ? { compactAt: this.compactAt } : {}),
+      ...(this.hooks ? { hooks: this.hooks } : {}),
+      permissions: {
+        ...resolvePreset(this.preset),
+        rules: [...this.rules, ...(resolvePreset(this.preset).rules ?? [])],
+        ...(this.gate ? { gate: this.gate } : {}),
+      },
+      ...(this.router ? { router: this.router } : {}),
+      persistSessions: true,
+    };
+  }
+
   buildAgent(render = true): Agent {
     const agent = new Agent({
       model: this.model,
@@ -1044,7 +1075,7 @@ async function repl(state: ReplState): Promise<void> {
 async function main(): Promise<void> {
   const opts = parseArgs(process.argv.slice(2));
   requireApiKey();
-  const headless = opts.outputFormat !== "text";
+  const headless = opts.outputFormat !== "text" || opts.acp;
   if (headless) {
     // stdout is the JSON; anything else the CLI or the loop says goes to stderr.
     console.log = (...args: unknown[]) => console.error(...args);
@@ -1055,6 +1086,16 @@ async function main(): Promise<void> {
   if (headless) state.prompt = headlessPrompt;
   await state.verifyGate();
   const mcp = opts.mcpServers ? await startMcp(opts.mcpServers) : undefined;
+
+  if (opts.acp) {
+    // stdout is the protocol. Serve until the editor closes the connection.
+    const stream = ndJsonStream(Writable.toWeb(process.stdout), Readable.toWeb(process.stdin) as unknown as ReadableStream<Uint8Array>);
+    const { cwd: _cwd, ...agent } = state.agentConfig();
+    const conn = serveAcp(stream, { agent });
+    await conn.closed;
+    await mcp?.close();
+    return;
+  }
 
   try {
     if (opts.prompt !== undefined) {

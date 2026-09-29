@@ -151,6 +151,7 @@ console.log(result.text, result.usage.estimatedCostUsd);
 | `--allow <rule>` / `--deny <rule>` | e.g. `"Bash(npm test *)"`, `"Read(~/.ssh/**)"`; repeatable, a deny always wins |
 | `--hooks <file>` | lifecycle hooks, in Claude Code's settings format |
 | `--mcp-config <file>` | MCP servers, in Claude Code's `.mcp.json` format |
+| `--acp` | serve the Agent Client Protocol on stdio, for an editor or a harness |
 | `--gate [backend]` | score the `ask` cases: `llm` (default) or `allowlist` (offline) |
 | `--gate-threshold <n>` | auto-allow below this P; default 0.20, model-specific |
 | `--cheap-model <id>` | route each new session between this and `--model`; needs `--gate` |
@@ -232,6 +233,15 @@ its tool calls indented under the Task call.
 `.claude/skills` or `.agent-app/skills`, in the project first and then the home directory.
 A new session is told each skill's name and description, a line apiece, and a `Skill` tool
 loads the instructions when the model asks for them (`skills: false` turns it off).
+
+**ACP** (`src/acp/`): `--acp` serves the Agent Client Protocol on stdio, so an editor
+that speaks it (Zed, JetBrains IDEs, Neovim, …) or a harness can launch
+`npx tsx cli/index.ts --acp` and drive the agent. Each ACP session is one of this harness's
+saved sessions; text and thinking stream as message chunks, tool calls as `tool_call`
+updates with their status, the task list as a plan; a permission question goes to the
+editor, and `session/cancel` stops the run. MCP servers the editor hands to `session/new`
+are connected for that session. It is exercised in the mock suite through the SDK's own
+client, in-process and against the real CLI over stdio.
 
 **MCP** (`src/mcp/`): `connectMcpServers` takes Claude Code's `.mcp.json` shape — a
 command to spawn over stdio, or a streamable-HTTP URL — and wraps each server's tools as
