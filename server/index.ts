@@ -534,5 +534,5 @@ app.listen(PORT, "127.0.0.1", () => {
   console.log(`\n🚀 Agent API server running at http://127.0.0.1:${PORT} (this machine only)`);
   console.log(`   API Key: ${process.env["ANTHROPIC_API_KEY"] ? "✓ set" : "✗ not set (enter in UI)"}`);
   console.log(`   Tools: ${globalRegistry.names().join(", ")}`);
-  console.log(`   Risk gate: ${gate ? gateLabel : "off"} — asks before Bash / Write / Edit\n`);
+  console.log(`   Asks before Bash / Write / Edit / WebFetch and MCP tools; risk gate: ${gate ? `${gateLabel}, for Bash only` : "off"}\n`);
 });

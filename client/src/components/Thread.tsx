@@ -227,8 +227,8 @@ export function EmptyState({ tools, onPick }: { tools: string[]; onPick: (prompt
       <p className="empty-kicker">A new session</p>
       <h1 className="empty-title">What should we work on?</h1>
       <p className="empty-sub">
-        Tools run on this machine. Anything that writes or runs a command is scored by the risk gate first, and
-        what it cannot clear comes to you.
+        Tools run on this machine. A shell command is scored by the risk gate first, and what it cannot clear
+        comes to you; so do file writes and edits.
       </p>
       <div className="empty-tools" aria-label="Tools available">
         {tools.map((t) => (

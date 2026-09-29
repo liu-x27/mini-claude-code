@@ -80,8 +80,8 @@ export function DecisionRail({ messages, judge, waitingId }: { messages: Message
       <div className="decisions">
         {calls.length === 0 && (
           <p className="rail-empty">
-            Bash, Write and Edit calls are scored here before they run. Below {threshold.toFixed(2)} on every question,
-            they run; otherwise they come to you.
+            Bash calls are scored here before they run. Below {threshold.toFixed(2)} on every question, they run;
+            otherwise they come to you.
           </p>
         )}
         {[...calls].reverse().map((c) => {
