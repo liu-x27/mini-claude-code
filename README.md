@@ -720,6 +720,9 @@ npm run lint
 npm run build
 ```
 
+CI runs the mock suite, the typecheck, lint and build, and the risk gate's dev set on the
+offline allow-list — never a held-out set, whose reads are logged — on Ubuntu and Windows.
+
 `npm run typecheck` covers `cli/`, `server/`, `client/` and `examples/` as well as
 `src/`, which `npm run build` does not — the former are run through `tsx`, so nothing
 else would catch their types.

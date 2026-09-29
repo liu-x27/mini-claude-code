@@ -1,0 +1,30 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  check:
+    strategy:
+      fail-fast: false
+      matrix:
+        # Windows too: it is where this is developed, and where the shell, the code page and the exit crash were found.
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          # The version this lockfile was made with: a newer npm resolves one optional peer differently.
+          node-version: 24.12.0
+          cache: npm
+      # The lockfile records the xavierjev dependency as git+ssh, and a runner has no SSH key.
+      - run: git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm run build
+      - run: npm test
+      # The gate's dev set on the offline allow-list: no model needed, and any false allow fails the run.
+      - run: npm run eval:risk-gate -- --backend allowlist
