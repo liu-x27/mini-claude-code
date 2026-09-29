@@ -139,7 +139,16 @@ export class Agent {
     await this.route(prompt);
 
     const messages: ConversationMessage[] = [...session.messages];
-    messages.push({ role: "user", content: userTurn(prompt, session.metadata.interrupted) });
+    const notes: string[] = [];
+    const environment = this.environmentLine();
+    if (session.metadata.environment !== environment) notes.push(`[Environment: ${environment}]`);
+    if (session.metadata.interrupted) {
+      notes.push(
+        `[Note from the harness: the previous run in this session ended early — ${session.metadata.interrupted}. The history above is what was recorded; check the current state before relying on its last step.]`,
+      );
+    }
+    session.metadata.environment = environment;
+    messages.push({ role: "user", content: userTurn(prompt, notes) });
 
     const toolCalls: ToolCallRecord[] = [];
     const usageAccum: AgentUsage = {
@@ -572,15 +581,23 @@ export class Agent {
     );
   }
 
+  /**
+   * Nothing in here may change within a session: it heads the prompt, so a
+   * change re-bills the whole conversation uncached. What does change — the
+   * working directory, the date — goes into the conversation instead.
+   */
   private buildSystemPrompt(): string {
     const parts = [BASE_SYSTEM_PROMPT];
     if (this.config.systemPrompt) parts.push(this.config.systemPrompt);
-    parts.push(`\nCurrent working directory: ${this.config.cwd}`);
     // The model was never told, and wrote bash for a tool that ran cmd.exe.
     // The Bash tool's description names the shell itself.
     parts.push(`Platform: ${os.type()} ${os.release()} (${process.platform})`);
-    parts.push(`Current date: ${new Date().toISOString().slice(0, 10)}`);
     return parts.join("\n\n");
+  }
+
+  /** The local date, not UTC: evening in the Americas is already tomorrow in UTC. */
+  private environmentLine(): string {
+    return `working directory ${this.config.cwd}; today is ${new Date().toLocaleDateString("sv-SE")}`;
   }
 
   private buildApiMessages(messages: ConversationMessage[]): Anthropic.MessageParam[] {
@@ -697,19 +714,13 @@ async function settle<T>(judge: () => Promise<T>, fallback: (reason: string) => 
 }
 
 /**
- * The prompt as the model receives it, with a note first when the last run
- * ended early. Appended, never edited into earlier turns, so the cached
- * prefix and the history's thinking blocks stay valid.
+ * The prompt as the model receives it, with the harness's notes first.
+ * Appended, never edited into earlier turns, so the cached prefix and the
+ * history's thinking blocks stay valid.
  */
-function userTurn(prompt: string, interrupted: string | undefined): ConversationMessage["content"] {
-  if (!interrupted) return prompt;
-  return [
-    {
-      type: "text",
-      text: `[Note from the harness: the previous run in this session ended early — ${interrupted}. The history above is what was recorded; check the current state before relying on its last step.]`,
-    },
-    { type: "text", text: prompt },
-  ];
+function userTurn(prompt: string, notes: string[]): ConversationMessage["content"] {
+  if (notes.length === 0) return prompt;
+  return [...notes.map((text) => ({ type: "text" as const, text })), { type: "text" as const, text: prompt }];
 }
 
 /** What to tell the caller when the model stopped for a reason other than finishing. */

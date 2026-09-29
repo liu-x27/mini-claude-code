@@ -178,7 +178,11 @@ the call's id), `turn_start`, `turn_retry`, `turn_end` and `done`, plus `text_de
 **The model** (`src/model/`) is behind a `ModelClient`: `AnthropicClient` by default,
 `OpenAICompatibleClient` for any Chat Completions endpoint, or a scripted one in tests.
 History stays Anthropic-shaped throughout, and a client for another API converts at its
-own edge, so the loop never branches on provider.
+own edge, so the loop never branches on provider. With caching on, the Anthropic client sets two cache
+breakpoints, on the system prompt (which covers the tools) and on the conversation's last
+block, so each turn reads the history before it from cache instead of paying for it again.
+The system prompt holds nothing that changes within a session: the working directory and
+the date are appended to the conversation when they change.
 
 **Tools** (`src/tools/`) subclass `Tool<T>`, declaring a JSON Schema and a `summarize()`
 used for permission prompts. `ToolRegistry` resolves the per-run set from `allowedTools`

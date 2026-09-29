@@ -154,6 +154,14 @@ export interface SessionMetadata {
    * call in flight at that moment may have partly happened.
    */
   interrupted?: string;
+  /**
+   * The working directory and date the model was last told. They used to sit
+   * in the system prompt, which then changed every day and on every /cwd,
+   * throwing away the prompt cache (and, on models that bind thinking to
+   * the prompt, invalidating earlier thinking); now they are appended to the
+   * conversation when they change.
+   */
+  environment?: string;
 }
 
 export interface Session {

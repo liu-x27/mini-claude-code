@@ -65,7 +65,15 @@ export class AnthropicClient implements ModelClient {
   }
 }
 
-/** The request body, without the transport. Exported so the mock suite can check it. */
+/**
+ * The request body, without the transport. Exported so the mock suite can check it.
+ *
+ * With caching on there are two breakpoints: the system prompt, which caches
+ * the tools rendered before it, and the last block of the conversation. The
+ * second is what an agent loop lives on — each turn then reads everything
+ * before it from cache and writes only what the last turn added. With only
+ * the first, every turn paid full price for the whole history again.
+ */
 export function buildParams(request: ModelRequest): Anthropic.MessageCreateParamsNonStreaming {
   const tools = request.tools.map((t) => t.toAnthropicTool());
   return {
@@ -74,7 +82,7 @@ export function buildParams(request: ModelRequest): Anthropic.MessageCreateParam
     system: request.enableCaching
       ? [{ type: "text" as const, text: request.system, cache_control: { type: "ephemeral" as const } }]
       : request.system,
-    messages: request.messages,
+    messages: request.enableCaching ? withCacheBreakpoint(request.messages) : request.messages,
     thinking: request.thinking as Anthropic.ThinkingConfigParam,
     // Only when asked for: a default here would override the model's own and
     // be rejected by the models and compatible endpoints that do not take it.
@@ -84,4 +92,23 @@ export function buildParams(request: ModelRequest): Anthropic.MessageCreateParam
       tool_choice: { type: "auto" } as Anthropic.ToolChoiceAuto,
     }),
   };
+}
+
+/**
+ * The messages with a cache breakpoint on the last block that can carry one.
+ * A copy: the history itself is never marked, so the breakpoint moves forward
+ * each turn instead of piling up past the limit of four.
+ */
+function withCacheBreakpoint(messages: Anthropic.MessageParam[]): Anthropic.MessageParam[] {
+  const last = messages[messages.length - 1];
+  if (!last) return messages;
+  const blocks: Anthropic.ContentBlockParam[] =
+    typeof last.content === "string" ? [{ type: "text", text: last.content }] : [...last.content];
+  for (let i = blocks.length - 1; i >= 0; i--) {
+    const block = blocks[i];
+    if (!block || block.type === "thinking" || block.type === "redacted_thinking") continue;
+    blocks[i] = { ...block, cache_control: { type: "ephemeral" } } as Anthropic.ContentBlockParam;
+    return [...messages.slice(0, -1), { ...last, content: blocks }];
+  }
+  return messages;
 }

@@ -1563,6 +1563,55 @@ await checkAsync("Glob：按修改时间，新的在前", async () => {
   if (order !== "b-newest.txt,c-middle.txt,a-oldest.txt") throw new Error(`顺序: ${order}`);
 });
 
+check("缓存：system 和对话的最后一块各一个断点；历史本身不被改写", () => {
+  const request: ModelRequest = {
+    model: "claude-opus-5-5",
+    system: "s",
+    messages: [
+      { role: "user", content: "first" },
+      { role: "assistant", content: [{ type: "tool_use", id: "t", name: "Echo", input: {} }] },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "t", content: "ok" }] },
+    ],
+    tools: [],
+    maxTokens: 100,
+    thinking: { type: "adaptive" },
+    enableCaching: true,
+    stream: false,
+  };
+  const before = JSON.stringify(request.messages);
+  const p = buildParams(request);
+  const last = p.messages.at(-1)!.content as Array<{ cache_control?: { type: string } }>;
+  if (last.at(-1)?.cache_control?.type !== "ephemeral") throw new Error("对话最后一块没有断点");
+  if (JSON.stringify(p.messages).split("cache_control").length !== 2) throw new Error("对话里只该有一个断点");
+  if (!Array.isArray(p.system) || !("cache_control" in p.system[0]!)) throw new Error("system 上没有断点");
+  if (JSON.stringify(request.messages) !== before) throw new Error("把历史本身改了");
+  const plain = buildParams({ ...request, messages: [{ role: "user", content: "hi" }] });
+  if (!JSON.stringify(plain.messages).includes('"cache_control"')) throw new Error("字符串内容也该带上断点");
+  if (JSON.stringify(buildParams({ ...request, enableCaching: false })).includes("cache_control")) {
+    throw new Error("关了缓存还带断点");
+  }
+});
+
+await checkAsync("system 里没有日期和工作目录；它们只在变化时作为环境说明追加进对话", async () => {
+  const dir = path.join(scratch, "env");
+  await fs.mkdir(dir, { recursive: true });
+  const systems: string[] = [];
+  const once = () => new ScriptedClient([async (req) => (systems.push(req.system), said("ok"))]);
+  const lastUser = (c: ScriptedClient) => c.seen[0]!.at(-1)!.content;
+
+  const c1 = once();
+  const r1 = await scriptedAgent(c1, { persistSessions: true, sessionDir: dir, cwd: scratch }).agent.run("one");
+  if (!JSON.stringify(lastUser(c1)).includes("[Environment:")) throw new Error("新会话应该先说明环境");
+  const c2 = once();
+  await scriptedAgent(c2, { persistSessions: true, sessionDir: dir, cwd: scratch, resumeSessionId: r1.sessionId }).agent.run("two");
+  if (lastUser(c2) !== "two") throw new Error(`环境没变就不该再说: ${JSON.stringify(lastUser(c2))}`);
+  const c3 = once();
+  await scriptedAgent(c3, { persistSessions: true, sessionDir: dir, cwd: dir, resumeSessionId: r1.sessionId }).agent.run("three");
+  if (!JSON.stringify(lastUser(c3)).includes(JSON.stringify(dir).slice(1, -1))) throw new Error("换了目录应该说明");
+  if (new Set(systems).size !== 1) throw new Error("同一会话里 system 变了");
+  if (systems[0]!.includes(scratch) || /\d{4}-\d{2}-\d{2}/.test(systems[0]!)) throw new Error("system 里还有目录或日期");
+});
+
 await checkAsync("effort：设了才发 output_config.effort，没设就不发", async () => {
   const base: ModelRequest = {
     model: "claude-opus-5-5",
