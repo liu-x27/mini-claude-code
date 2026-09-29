@@ -75,6 +75,10 @@ export type {
   RiskGateOptions,
 } from "xavierjev";
 
+// MCP
+export { connectMcpServers } from "./mcp/index.js";
+export type { McpConnection, McpServerConfig } from "./mcp/index.js";
+
 // Hooks
 export { runHooks } from "./hooks/index.js";
 export type { HookEvent, HookHandler, HookInput, HookMatcher, HookOutcome, HookOutput, HooksConfig } from "./hooks/index.js";

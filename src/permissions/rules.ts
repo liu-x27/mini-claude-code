@@ -25,10 +25,11 @@ export interface RuleTarget {
   cwd: string;
 }
 
-/** Pattern rules beat tool rules, which beat `*`. */
+/** Pattern rules beat tool rules, which beat a prefix like `mcp__*`, which beats `*`. */
 export function specificity(rule: PermissionRule): number {
-  if (rulePattern(rule) !== undefined) return 2;
-  return rule.tool === "*" ? 0 : 1;
+  if (rulePattern(rule) !== undefined) return 3;
+  if (rule.tool === "*") return 0;
+  return rule.tool.endsWith("*") ? 1 : 2;
 }
 
 /** Path patterns on Read cover the other tools that read, and on Edit the other that writes. */
@@ -42,7 +43,10 @@ const FAMILIES: Record<string, string[]> = {
 
 export function ruleMatches(rule: PermissionRule, target: RuleTarget): boolean {
   const pattern = rulePattern(rule);
-  if (pattern === undefined) return rule.tool === "*" || rule.tool === target.toolName;
+  if (pattern === undefined) {
+    if (rule.tool.endsWith("*")) return target.toolName.startsWith(rule.tool.slice(0, -1));
+    return rule.tool === target.toolName;
+  }
 
   if (rule.tool === "Bash") {
     if (target.toolName !== "Bash" || typeof target.input.command !== "string") return false;

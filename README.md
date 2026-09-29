@@ -149,6 +149,7 @@ console.log(result.text, result.usage.estimatedCostUsd);
 | `--allow-all` / `--ask` / `--read-only` | permission preset (default `--ask`) |
 | `--allow <rule>` / `--deny <rule>` | e.g. `"Bash(npm test *)"`, `"Read(~/.ssh/**)"`; repeatable, a deny always wins |
 | `--hooks <file>` | lifecycle hooks, in Claude Code's settings format |
+| `--mcp-config <file>` | MCP servers, in Claude Code's `.mcp.json` format |
 | `--gate [backend]` | score the `ask` cases: `llm` (default) or `allowlist` (offline) |
 | `--gate-threshold <n>` | auto-allow below this P; default 0.20, model-specific |
 | `--cheap-model <id>` | route each new session between this and `--model`; needs `--gate` |
@@ -211,6 +212,14 @@ answers it. That second path is why the prompt is injectable at all; until recen
 server ran `defaultMode: "allow"` and executed every tool call without asking, which was
 the one configuration the CLI never offered. It fails closed on a timeout and on the tab
 closing.
+
+**MCP** (`src/mcp/`): `connectMcpServers` takes Claude Code's `.mcp.json` shape — a
+command to spawn over stdio, or a streamable-HTTP URL — and wraps each server's tools as
+`mcp__<server>__<tool>`; the CLI takes `--mcp-config`. A server that fails to start is
+reported and left out. Tools a server marks `readOnlyHint` run alongside others, the rest
+alone and in order, and the ask preset asks before any `mcp__` tool until a rule allows
+it. The stdio path is exercised in the mock suite against a two-tool server in
+`examples/fixtures/`, and live from the CLI; the HTTP transport is not yet.
 
 **Hooks** (`src/hooks/`) take Claude Code's format — the same settings JSON, the same
 input on stdin, exit code 2 to block, the same JSON answers — so its hook scripts run here

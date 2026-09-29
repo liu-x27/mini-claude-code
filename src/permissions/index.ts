@@ -245,6 +245,8 @@ export const PermissionPresets = {
       { tool: "Write", mode: "ask" },
       { tool: "Edit", mode: "ask" },
       { tool: "WebFetch", mode: "ask" },
+      // Every MCP tool: what a server's tool does is the server's to say.
+      { tool: "mcp__*", mode: "ask" },
     ],
   }),
 

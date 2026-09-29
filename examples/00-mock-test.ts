@@ -16,6 +16,7 @@ import { buildRgArgs, GrepTool } from "../src/tools/grep.js";
 import { decodeOutput, resolveShell } from "../src/tools/shell.js";
 import { buildParams } from "../src/model/anthropic.js";
 import type { HookOutput } from "../src/hooks/index.js";
+import { connectMcpServers } from "../src/mcp/index.js";
 import { MAX_TOOL_OUTPUT_CHARS } from "../src/utils/truncate.js";
 import { PermissionSystem, PermissionPresets, parseRule } from "../src/permissions/index.js";
 import {
@@ -1872,6 +1873,46 @@ await checkAsync("闸门只替 Bash 作答：Write/Edit/WebFetch 从没在它身
   }
   const wider = new PermissionSystem({ ...PermissionPresets.askDangerous(), gate: clearsEverything, gateTools: ["Bash", "Write"] });
   if (!(await wider.check({ toolName: "Write", input: { file_path: "a", content: "" }, description: "a" }))) throw new Error("gateTools 没生效");
+});
+
+await checkAsync("MCP：连上 stdio 服务，工具成为 mcp__服务__工具；只读的并行，出错如实交回；--ask 预设先问", async () => {
+  const fixture = path.join(REPO_ROOT, "examples", "fixtures", "mcp-server.mjs");
+  const mcp = await connectMcpServers({
+    fixture: { command: process.execPath, args: [fixture] },
+    missing: { command: path.join(scratch, "no-such-server.exe") },
+  });
+  try {
+    const names = mcp.tools.map((t) => t.name).sort().join(",");
+    if (names !== "mcp__fixture__fail,mcp__fixture__shout") throw new Error(`工具: ${names}`);
+    const shout = mcp.tools.find((t) => t.name.endsWith("shout"))!;
+    const fail = mcp.tools.find((t) => t.name.endsWith("fail"))!;
+    if (shout.dangerous || !fail.dangerous) throw new Error("readOnlyHint 的工具应可并行，其余按危险处理");
+    if (mcp.failures.length !== 1 || mcp.failures[0]!.server !== "missing") throw new Error(`失败列表: ${JSON.stringify(mcp.failures)}`);
+
+    let asked = 0;
+    const client = new ScriptedClient([
+      calls(["s", "mcp__fixture__shout", { text: "hello" }], ["f", "mcp__fixture__fail", {}]),
+      said("done"),
+    ]);
+    await new Agent(
+      {
+        client,
+        persistSessions: false,
+        permissions: {
+          ...PermissionPresets.askDangerous(),
+          rules: [parseRule("mcp__fixture__shout", "allow"), ...PermissionPresets.askDangerous().rules!],
+          prompt: async () => (asked++, "allow"),
+        },
+      },
+      new ToolRegistry().register(...mcp.tools),
+    ).run("go");
+    const [s, f] = toolResultsIn(client.seen[1]!);
+    if (s?.content !== "HELLO" || s.is_error) throw new Error(`shout: ${JSON.stringify(s)}`);
+    if (!f?.is_error || !String(f.content).includes("nope")) throw new Error(`fail: ${JSON.stringify(f)}`);
+    if (asked !== 1) throw new Error(`没放行的 MCP 工具应该问一次，问了 ${asked} 次`);
+  } finally {
+    await mcp.close();
+  }
 });
 
 check("parseRule：读 Claude Code 的规则写法，写错就报错", () => {

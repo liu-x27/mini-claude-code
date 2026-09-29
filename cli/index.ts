@@ -52,6 +52,7 @@ import type {
   RiskGate,
 } from "../src/types.js";
 import type { HooksConfig } from "../src/hooks/index.js";
+import { connectMcpServers, type McpConnection, type McpServerConfig } from "../src/mcp/index.js";
 import { addCost } from "../src/utils/cost.js";
 
 registerBuiltinTools();
@@ -171,6 +172,8 @@ interface CliOptions {
   rules: PermissionRule[];
   /** From --hooks: a Claude Code settings file, or just its "hooks" object. */
   hooks: HooksConfig | undefined;
+  /** From --mcp-config: a Claude Code .mcp.json, or just its "mcpServers" object. */
+  mcpServers: Record<string, McpServerConfig> | undefined;
   gate: GateBackend;
   /**
    * Auto-allow threshold for the gate. Undefined means the library default.
@@ -202,6 +205,7 @@ function parseArgs(argv: string[]): CliOptions {
     preset: "ask",
     rules: [],
     hooks: undefined,
+    mcpServers: undefined,
     gate: "off",
     gateThreshold: undefined,
     cheapModel: undefined,
@@ -258,6 +262,19 @@ function parseArgs(argv: string[]): CliOptions {
           opts.hooks = parsed.hooks ?? parsed;
         } catch (err) {
           console.error(chalk.red(`--hooks ${file}: ${err instanceof Error ? err.message : String(err)}`));
+          process.exit(1);
+        }
+        break;
+      }
+      case "--mcp-config": {
+        const file = next();
+        try {
+          const parsed = JSON.parse(readFileSync(file, "utf-8")) as {
+            mcpServers?: Record<string, McpServerConfig>;
+          } & Record<string, McpServerConfig>;
+          opts.mcpServers = parsed.mcpServers ?? parsed;
+        } catch (err) {
+          console.error(chalk.red(`--mcp-config ${file}: ${err instanceof Error ? err.message : String(err)}`));
           process.exit(1);
         }
         break;
@@ -404,6 +421,9 @@ ${chalk.bold("Options")}
                          a deny always wins; repeatable
       --hooks <file>     Lifecycle hooks, in Claude Code's settings format
                          (PreToolUse, PermissionRequest, PostToolUse, Stop, ...)
+      --mcp-config <file>
+                         MCP servers, in Claude Code's .mcp.json format; their
+                         tools are mcp__<server>__<tool>, asked about under --ask
       --gate [backend]   Let a judge clear the easy "ask" cases
                          (allowlist = offline, default; llm = needs a key)
       --gate-threshold <n>
@@ -915,14 +935,30 @@ async function main(): Promise<void> {
 
   const state = new ReplState(opts);
   await state.verifyGate();
+  const mcp = opts.mcpServers ? await startMcp(opts.mcpServers) : undefined;
 
-  if (opts.prompt !== undefined) {
-    process.on("SIGINT", () => interrupt(state));
-    await runOnce(state, opts.prompt);
-    return;
+  try {
+    if (opts.prompt !== undefined) {
+      process.on("SIGINT", () => interrupt(state));
+      await runOnce(state, opts.prompt);
+      return;
+    }
+    await repl(state);
+  } finally {
+    await mcp?.close();
   }
+}
 
-  await repl(state);
+/** Connect the configured MCP servers and register their tools; a server that fails is reported, not fatal. */
+async function startMcp(servers: Record<string, McpServerConfig>): Promise<McpConnection> {
+  const mcp = await connectMcpServers(servers);
+  globalRegistry.register(...mcp.tools);
+  const connected = Object.keys(servers).filter((name) => !mcp.failures.some((f) => f.server === name));
+  if (connected.length > 0) {
+    console.log(chalk.gray(`MCP: ${mcp.tools.length} tool(s) from ${connected.join(", ")}`));
+  }
+  for (const f of mcp.failures) console.log(chalk.yellow(`⚠  MCP server ${f.server} unavailable: ${f.error}`));
+  return mcp;
 }
 
 main().then(
