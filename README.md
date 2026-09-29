@@ -723,6 +723,23 @@ else would catch their types.
 Seven runnable examples live in `examples/`, from a single call to subagents and custom
 tools.
 
+### On Terminal-Bench, through Harbor
+
+`integrations/harbor/mini_claude_code.py` runs this harness as a Harbor installed agent:
+it installs Node 22+ and this repository in the task's container, runs `-p` with
+`--output-format stream-json` in the task's directory, and reads the token counts back
+from the result line.
+
+```bash
+harbor run -d terminal-bench@2.0 -a integrations.harbor.mini_claude_code:MiniClaudeCode   -m anthropic/claude-opus-5-5 --agent-env ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY
+```
+
+The measurement it exists for is the same model three ways — this harness, Harbor's
+terminus-2 and mini-swe-agent — since on Terminal-Bench 2.0 the harness alone has moved
+one model by 18 points. **Not yet run:** it was written against Harbor's documented
+interface on a machine without Docker, and the command it builds was only run locally,
+outside a container. It installs from GitHub, so `--agent-kwarg ref=` names what it runs.
+
 ### Any Anthropic-compatible endpoint
 
 Nothing here is pinned to api.anthropic.com. The SDK honours `ANTHROPIC_BASE_URL`, so
