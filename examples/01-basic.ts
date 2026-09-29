@@ -10,7 +10,7 @@
 import { Agent, formatCost } from "../src/index.js";
 
 const agent = new Agent({
-  model: "claude-opus-5",
+  model: "claude-opus-5-5",
   thinking: { type: "adaptive" },
   allowedTools: [], // No tools for this basic example
 });

@@ -315,7 +315,7 @@ function resolveClient(body: {
  * browser already reads.
  */
 app.post("/api/chat", async (req, res) => {
-  const { message, sessionId, model = "claude-opus-5", allowedTools, ...rest } = req.body as {
+  const { message, sessionId, model = "claude-opus-5-5", allowedTools, ...rest } = req.body as {
     message?: unknown;
     sessionId?: string;
     apiKey?: string;

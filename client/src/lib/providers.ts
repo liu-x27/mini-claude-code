@@ -1,7 +1,7 @@
 import type { Provider } from "../hooks/useChat";
 
 export const PROVIDER_PRESETS: Array<{ label: string; provider: Provider; baseURL: string; models: string[] }> = [
-  { label: "Anthropic", provider: "anthropic", baseURL: "", models: ["claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5"] },
+  { label: "Anthropic", provider: "anthropic", baseURL: "", models: ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-4-5"] },
   { label: "OpenAI", provider: "openai", baseURL: "https://api.openai.com/v1", models: ["gpt-4o", "gpt-4o-mini", "o3-mini"] },
   { label: "DeepSeek", provider: "openai", baseURL: "https://api.deepseek.com/v1", models: ["deepseek-chat", "deepseek-reasoner"] },
   { label: "Groq", provider: "openai", baseURL: "https://api.groq.com/openai/v1", models: ["llama-3.3-70b-versatile", "mixtral-8x7b-32768"] },

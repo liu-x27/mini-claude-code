@@ -212,7 +212,7 @@ const EFFORT_LEVELS: EffortLevel[] = ["low", "medium", "high", "xhigh", "max"];
 
 function parseArgs(argv: string[]): CliOptions {
   const opts: CliOptions = {
-    model: (process.env.AGENT_MODEL as ModelId | undefined) ?? "claude-opus-5",
+    model: (process.env.AGENT_MODEL as ModelId | undefined) ?? "claude-opus-5-5",
     cwd: process.cwd(),
     preset: "ask",
     rules: [],
@@ -442,7 +442,7 @@ ${chalk.bold("Options")}
       --output-format <f> With -p: text (default), json (one result object) or
                          stream-json (one JSON event per line, then the result).
                          Asks are denied in json modes: nobody is there to answer
-  -m, --model <id>       Model id (default: claude-opus-5)
+  -m, --model <id>       Model id (default: claude-opus-5-5)
   -C, --cwd <path>       Working directory for file and shell tools
       --resume <id>      Resume a saved session
       --max-turns <n>    Max agentic turns per prompt (default: 20)

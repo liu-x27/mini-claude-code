@@ -43,7 +43,7 @@ import { MAX_TOOL_OUTPUT_CHARS, truncateMiddle } from "./utils/truncate.js";
 // Ensure built-in tools are registered
 registerBuiltinTools();
 
-const DEFAULT_MODEL = "claude-opus-5";
+const DEFAULT_MODEL = "claude-opus-5-5";
 const DEFAULT_MAX_TURNS = 20;
 const DEFAULT_MAX_TOKENS = 16_000;
 /** How far a turn cut off mid tool call may raise max_tokens, doubling each time. */
@@ -76,7 +76,7 @@ If a task requires multiple steps, plan them out before executing.`;
  *
  * @example
  * ```ts
- * const agent = new Agent({ model: "claude-opus-5" });
+ * const agent = new Agent({ model: "claude-opus-5-5" });
  * const result = await agent.run("What files are in /tmp?");
  * console.log(result.text);
  * ```

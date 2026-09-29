@@ -23,7 +23,7 @@ function loadSettings(): Settings {
     apiKey: localStorage.getItem("apiKey") ?? "",
     baseURL,
     provider,
-    model: localStorage.getItem("model") ?? "claude-opus-5",
+    model: localStorage.getItem("model") ?? "claude-opus-5-5",
   };
 }
 

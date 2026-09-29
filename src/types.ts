@@ -22,6 +22,9 @@ import type { HooksConfig } from "./hooks/index.js";
 // ─────────────────────────────────────────────
 
 export type ModelId =
+  | "claude-opus-5-5"
+  | "claude-sonnet-5-5"
+  | "claude-fable-5-1"
   | "claude-opus-5"
   | "claude-sonnet-5"
   | "claude-haiku-4-5"
@@ -214,7 +217,7 @@ export interface AgentConfig {
    */
   client?: ModelClient;
 
-  /** Claude model to use (default: claude-opus-5) */
+  /** Claude model to use (default: claude-opus-5-5) */
   model?: ModelId;
 
   /** Custom system prompt (appended to base prompt) */
