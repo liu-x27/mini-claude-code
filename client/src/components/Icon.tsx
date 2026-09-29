@@ -31,6 +31,7 @@ const PATHS = {
   shield: "M12 3l8 3v6c0 4.5-3.4 8.3-8 9-4.6-.7-8-4.5-8-9V6Z",
   key: "M15 7a4 4 0 1 1-3.9 5H8v3H5v-3H3v-3h8.1A4 4 0 0 1 15 7Z",
   check: "M5 12.5l4.5 4.5L19 7.5",
+  list: "M9 6h11 M9 12h11 M9 18h11 M4 6h.01 M4 12h.01 M4 18h.01",
   alert: "M12 3l10 18H2Z M12 10v4 M12 17.5v.5",
 } as const;
 
@@ -66,4 +67,6 @@ export const TOOL_ICONS: Record<string, IconName> = {
   Glob: "folderSearch",
   Grep: "search",
   WebFetch: "globe",
+  TodoWrite: "list",
+  Task: "sparkle",
 };

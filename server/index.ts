@@ -1,6 +1,6 @@
 import express, { type NextFunction, type Request, type Response } from "express";
 import { randomUUID } from "node:crypto";
-import { Agent } from "../src/agent.js";
+import { AGENT_TOOL_NAMES, Agent } from "../src/agent.js";
 import {
   AllowlistJudge,
   anyStopJudge,
@@ -126,7 +126,8 @@ app.get("/api/health", (_req, res) => {
   res.json({
     status: "ok",
     hasApiKey: !!process.env["ANTHROPIC_API_KEY"],
-    tools: globalRegistry.names(),
+    // The agent's own tools too: the browser sends back what it lists as allowedTools.
+    tools: [...globalRegistry.names(), ...AGENT_TOOL_NAMES],
     judge: gate ? gateLabel : null,
     // Whether the snake arena can ask a model, or only run its rule.
     choice: chooser ? chooser.name : null,

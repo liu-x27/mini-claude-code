@@ -48,6 +48,13 @@ const DEFAULT_MAX_TURNS = 20;
 const DEFAULT_MAX_TOKENS = 16_000;
 /** How far a turn cut off mid tool call may raise max_tokens, doubling each time. */
 const MAX_RETRY_TOKENS = 64_000;
+/**
+ * Tools the Agent adds itself rather than taking from the registry. A host
+ * that lists tools for the user to switch on and off, and passes the result
+ * as allowedTools, has to list these too, or they are never offered.
+ */
+export const AGENT_TOOL_NAMES = ["TodoWrite", "Task", "Skill"];
+
 /** How many times a Stop hook may send the model back to work in one run. */
 const MAX_STOP_CONTINUATIONS = 5;
 

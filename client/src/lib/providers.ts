@@ -16,4 +16,4 @@ export const API_FORMATS: Array<{ value: Provider; label: string }> = [
 export const ALL_MODELS = [...new Set(PROVIDER_PRESETS.flatMap((p) => p.models))];
 
 /** Used until /api/health answers with the server's actual registry. */
-export const DEFAULT_TOOLS = ["Bash", "Read", "Write", "Edit", "Glob", "Grep", "WebFetch"];
+export const DEFAULT_TOOLS = ["Bash", "Read", "Write", "Edit", "Glob", "Grep", "WebFetch", "TodoWrite", "Task", "Skill"];

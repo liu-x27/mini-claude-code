@@ -39,7 +39,7 @@ import { ndJsonStream } from "@agentclientprotocol/sdk";
 import { serveAcp } from "../src/acp/index.js";
 import * as readline from "node:readline";
 import chalk from "chalk";
-import { Agent } from "../src/agent.js";
+import { AGENT_TOOL_NAMES, Agent } from "../src/agent.js";
 import { AllowlistJudge, createModelRouter, createRiskGate, LlmJudge } from "xavierjev";
 import { PermissionPresets, parseDecision, parseRule } from "../src/permissions/index.js";
 import { SessionManager } from "../src/session/manager.js";
@@ -796,7 +796,7 @@ async function handleCommand(input: string, state: ReplState): Promise<boolean> 
 
     case "tools":
       console.log(chalk.bold("Registered tools:"));
-      for (const name of globalRegistry.names()) {
+      for (const name of [...globalRegistry.names(), ...AGENT_TOOL_NAMES]) {
         console.log(`  ${chalk.cyan(name)}`);
       }
       return true;

@@ -16,7 +16,7 @@
  */
 
 // Core
-export { Agent } from "./agent.js";
+export { AGENT_TOOL_NAMES, Agent } from "./agent.js";
 
 // Model APIs — what the agent loop calls
 export { AnthropicClient, OpenAICompatibleClient, REASONING_SIGNATURE, toOpenAIMessages } from "./model/index.js";
