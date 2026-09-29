@@ -15,6 +15,7 @@ import { GlobTool } from "../src/tools/glob.js";
 import { buildRgArgs, GrepTool } from "../src/tools/grep.js";
 import { decodeOutput, resolveShell } from "../src/tools/shell.js";
 import { buildParams } from "../src/model/anthropic.js";
+import type { HookOutput } from "../src/hooks/index.js";
 import { MAX_TOOL_OUTPUT_CHARS } from "../src/utils/truncate.js";
 import { PermissionSystem, PermissionPresets, parseRule } from "../src/permissions/index.js";
 import {
@@ -1866,6 +1867,139 @@ check("parseRule：读 Claude Code 的规则写法，写错就报错", () => {
     }
     if (!threw) throw new Error(`${JSON.stringify(bad)} 应该报错`);
   }
+});
+
+await checkAsync("hooks：命令钩子照 Claude Code 的约定——stdin 收 JSON，exit 2 拦下，stdout 的 JSON 改写输入", async () => {
+  const script = path.join(scratch, "pre-tool.mjs");
+  await fs.writeFile(
+    script,
+    [
+      'let raw = "";',
+      'process.stdin.on("data", (d) => (raw += d)).on("end", () => {',
+      "  const input = JSON.parse(raw);",
+      '  if (input.tool_input.text === "forbidden") {',
+      '    process.stderr.write("no forbidden words");',
+      "    process.exit(2);",
+      "  }",
+      "  const text = [input.hook_event_name, input.tool_name, input.tool_input.text, input.session_id ? \"sid\" : \"\"].join(\":\");",
+      '  console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", updatedInput: { text } } }));',
+      "});",
+    ].join("\n"),
+  );
+  const hooks = { PreToolUse: [{ matcher: "Echo", hooks: [{ type: "command" as const, command: `node "${script.replace(/\\/g, "/")}"` }] }] };
+  const client = new ScriptedClient([calls(["f", "Echo", { text: "forbidden" }], ["h", "Echo", { text: "hi" }]), said("done")]);
+  await scriptedAgent(client, { hooks }).agent.run("go");
+  const [blocked, rewritten] = toolResultsIn(client.seen[1]!);
+  if (!blocked?.is_error || !String(blocked.content).includes("no forbidden words")) throw new Error(`拦截: ${JSON.stringify(blocked)}`);
+  if (rewritten?.content !== "PreToolUse:Echo:hi:sid") throw new Error(`改写: ${JSON.stringify(rewritten)}`);
+});
+
+await checkAsync("hooks：PermissionRequest 在闸门和用户之前作答；deny 规则仍然优先于钩子的放行", async () => {
+  const log: Array<{ tag: string; start: number; end: number }> = [];
+  const registry = new ToolRegistry().register(new NapTool("Change", true, log));
+  let asked = 0;
+  const run = (hooks: NonNullable<AgentConfig["hooks"]>, mode: "ask" | "deny") => {
+    const client = new ScriptedClient([calls(["c", "Change", { tag: "c" }]), said("done")]);
+    const agent = new Agent(
+      {
+        client,
+        persistSessions: false,
+        hooks,
+        permissions: { defaultMode: "allow", rules: [{ tool: "Change", mode }], prompt: async () => (asked++, "deny") },
+      },
+      registry,
+    );
+    return agent.run("go").then(() => toolResultsIn(client.seen[1]!)[0]);
+  };
+  const allowAsk = { PermissionRequest: [{ hooks: [{ type: "function" as const, run: () => ({ hookSpecificOutput: { decision: { behavior: "allow" as const } } }) }] }] };
+  const r1 = await run(allowAsk, "ask");
+  if (r1?.is_error || asked !== 0) throw new Error(`PermissionRequest 放行后还问了 ${asked} 次: ${JSON.stringify(r1)}`);
+
+  const preAllow = { PreToolUse: [{ hooks: [{ type: "function" as const, run: () => ({ hookSpecificOutput: { permissionDecision: "allow" as const } }) }] }] };
+  const r2 = await run(preAllow, "deny");
+  if (!r2?.is_error) throw new Error("钩子放行盖过了 deny 规则");
+
+  const denyAsk = { PermissionRequest: [{ hooks: [{ type: "function" as const, run: () => ({ hookSpecificOutput: { decision: { behavior: "deny" as const } } }) }] }] };
+  const r3 = await run(denyAsk, "ask");
+  if (!r3?.is_error || asked !== 0) throw new Error("PermissionRequest 拒绝后应直接拒、不问用户");
+});
+
+await checkAsync("hooks：XavierJev 式的 http PermissionRequest 服务可以直接接上", async () => {
+  const seen: Array<Record<string, unknown>> = [];
+  const fake = http.createServer((req, res) => {
+    let raw = "";
+    req.on("data", (d) => (raw += d));
+    req.on("end", () => {
+      seen.push(JSON.parse(raw));
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ hookSpecificOutput: { hookEventName: "PermissionRequest", decision: { behavior: "allow", message: "cleared" } } }));
+    });
+  });
+  await new Promise<void>((r) => fake.listen(0, "127.0.0.1", r));
+  try {
+    const { port } = fake.address() as { port: number };
+    const log: Array<{ tag: string; start: number; end: number }> = [];
+    const client = new ScriptedClient([calls(["c", "Change", { tag: "c" }]), said("done")]);
+    let asked = 0;
+    await new Agent(
+      {
+        client,
+        persistSessions: false,
+        hooks: { PermissionRequest: [{ matcher: "Change", hooks: [{ type: "http", url: `http://127.0.0.1:${port}/hook` }] }] },
+        permissions: { defaultMode: "allow", rules: [{ tool: "Change", mode: "ask" }], prompt: async () => (asked++, "deny") },
+      },
+      new ToolRegistry().register(new NapTool("Change", true, log)),
+    ).run("go");
+    const body = seen[0];
+    if (asked !== 0 || body?.["hook_event_name"] !== "PermissionRequest" || body["tool_name"] !== "Change") {
+      throw new Error(`问了 ${asked} 次；服务收到: ${JSON.stringify(body)}`);
+    }
+    if (toolResultsIn(client.seen[1]!)[0]?.is_error) throw new Error("服务放行后调用却没执行");
+  } finally {
+    fake.closeAllConnections();
+    await new Promise((r) => fake.close(r));
+  }
+});
+
+await checkAsync("hooks：UserPromptSubmit 可拦下或补上下文；SessionStart、PostToolUse 的上下文交给模型", async () => {
+  const fn = (out: HookOutput) => [{ hooks: [{ type: "function" as const, run: () => out }] }];
+  const blocked = new ScriptedClient([]);
+  const r1 = await scriptedAgent(blocked, { hooks: { UserPromptSubmit: fn({ decision: "block", reason: "no secrets in prompts" }) } }).agent.run("my key is sk-123");
+  if (r1.stopReason !== "blocked" || blocked.seen.length !== 0 || !r1.text.includes("no secrets")) throw new Error(`拦截: ${r1.stopReason}/${r1.text}`);
+
+  const client = new ScriptedClient([calls(["t", "Echo", { text: "x" }]), said("done")]);
+  await scriptedAgent(client, {
+    hooks: {
+      SessionStart: fn({ hookSpecificOutput: { additionalContext: "branch is main" } }),
+      UserPromptSubmit: fn({ hookSpecificOutput: { additionalContext: "user is on call" } }),
+      PostToolUse: fn({ hookSpecificOutput: { additionalContext: "lint passed" } }),
+    },
+  }).agent.run("go");
+  const first = JSON.stringify(client.seen[0]!.at(-1));
+  if (!first.includes("branch is main") || !first.includes("user is on call")) throw new Error(`首条消息: ${first.slice(0, 300)}`);
+  if (!String(toolResultsIn(client.seen[1]!)[0]?.content).includes("lint passed")) throw new Error("PostToolUse 的上下文没进结果");
+});
+
+await checkAsync("hooks：Stop 钩子可以把模型送回去继续做，第二次 stop_hook_active 为 true", async () => {
+  const active: boolean[] = [];
+  const client = new ScriptedClient([said("done?"), said("now really done")]);
+  const result = await scriptedAgent(client, {
+    hooks: {
+      Stop: [
+        {
+          hooks: [
+            {
+              type: "function",
+              run: (input) => (active.push(Boolean(input.stop_hook_active)), input.stop_hook_active ? undefined : { decision: "block", reason: "run the tests first" }),
+            },
+          ],
+        },
+      ],
+    },
+  }).agent.run("go");
+  if (result.text !== "now really done" || client.seen.length !== 2) throw new Error(`结果: ${result.text}，调了 ${client.seen.length} 次`);
+  if (!JSON.stringify(client.seen[1]!.at(-1)).includes("run the tests first")) throw new Error("模型没收到 Stop 钩子的理由");
+  if (active.join(",") !== "false,true") throw new Error(`stop_hook_active: ${active.join(",")}`);
 });
 
 await checkAsync("effort：设了才发 output_config.effort，没设就不发", async () => {

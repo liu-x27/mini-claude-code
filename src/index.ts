@@ -75,6 +75,10 @@ export type {
   RiskGateOptions,
 } from "xavierjev";
 
+// Hooks
+export { runHooks } from "./hooks/index.js";
+export type { HookEvent, HookHandler, HookInput, HookMatcher, HookOutcome, HookOutput, HooksConfig } from "./hooks/index.js";
+
 // Utils
 export { logger } from "./utils/logger.js";
 export { estimateCost, formatCost } from "./utils/cost.js";

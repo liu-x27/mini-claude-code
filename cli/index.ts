@@ -32,6 +32,7 @@
  *      core API rather than to this entry point.
  */
 
+import { readFileSync } from "node:fs";
 import { stdin, stdout } from "node:process";
 import * as readline from "node:readline";
 import chalk from "chalk";
@@ -50,6 +51,7 @@ import type {
   PermissionRule,
   RiskGate,
 } from "../src/types.js";
+import type { HooksConfig } from "../src/hooks/index.js";
 import { addCost } from "../src/utils/cost.js";
 
 registerBuiltinTools();
@@ -167,6 +169,8 @@ interface CliOptions {
   preset: PermissionPreset;
   /** From --allow and --deny, ahead of the preset's own rules. */
   rules: PermissionRule[];
+  /** From --hooks: a Claude Code settings file, or just its "hooks" object. */
+  hooks: HooksConfig | undefined;
   gate: GateBackend;
   /**
    * Auto-allow threshold for the gate. Undefined means the library default.
@@ -197,6 +201,7 @@ function parseArgs(argv: string[]): CliOptions {
     cwd: process.cwd(),
     preset: "ask",
     rules: [],
+    hooks: undefined,
     gate: "off",
     gateThreshold: undefined,
     cheapModel: undefined,
@@ -246,6 +251,17 @@ function parseArgs(argv: string[]): CliOptions {
       case "--read-only":
         opts.preset = "read-only";
         break;
+      case "--hooks": {
+        const file = next();
+        try {
+          const parsed = JSON.parse(readFileSync(file, "utf-8")) as { hooks?: HooksConfig } & HooksConfig;
+          opts.hooks = parsed.hooks ?? parsed;
+        } catch (err) {
+          console.error(chalk.red(`--hooks ${file}: ${err instanceof Error ? err.message : String(err)}`));
+          process.exit(1);
+        }
+        break;
+      }
       case "--allow":
       case "--deny": {
         const spec = next();
@@ -386,6 +402,8 @@ ${chalk.bold("Options")}
                          "WebFetch(domain:docs.python.org)"; repeatable
       --deny <rule>      Refuse what a rule covers, e.g. "Read(~/.ssh/**)";
                          a deny always wins; repeatable
+      --hooks <file>     Lifecycle hooks, in Claude Code's settings format
+                         (PreToolUse, PermissionRequest, PostToolUse, Stop, ...)
       --gate [backend]   Let a judge clear the easy "ask" cases
                          (allowlist = offline, default; llm = needs a key)
       --gate-threshold <n>
@@ -522,6 +540,7 @@ class ReplState {
   cwd: string;
   preset: PermissionPreset;
   rules: PermissionRule[];
+  hooks: HooksConfig | undefined;
   gateBackend: GateBackend;
   gateThreshold: number | undefined;
   maxTurns: number;
@@ -549,6 +568,7 @@ class ReplState {
     this.cwd = opts.cwd;
     this.preset = opts.preset;
     this.rules = opts.rules;
+    this.hooks = opts.hooks;
     this.gateBackend = opts.gate;
     this.gateThreshold = opts.gateThreshold;
     this.maxTurns = opts.maxTurns;
@@ -629,6 +649,7 @@ class ReplState {
       maxTurns: this.maxTurns,
       ...(this.effort ? { effort: this.effort } : {}),
       ...(this.compactAt !== undefined ? { compactAt: this.compactAt } : {}),
+      ...(this.hooks ? { hooks: this.hooks } : {}),
       permissions: {
         ...resolvePreset(this.preset),
         rules: [...this.rules, ...(resolvePreset(this.preset).rules ?? [])],

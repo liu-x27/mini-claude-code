@@ -5,6 +5,7 @@ import type Anthropic from "@anthropic-ai/sdk";
 import chalk from "chalk";
 import { COMPACTION_PROMPT, compactedHistory, defaultCompactAt, renderTranscript } from "./context/compaction.js";
 import { loadProjectInstructions } from "./context/instructions.js";
+import { type HookEvent, type HookInput, type HookOutcome, type HooksConfig, runHooks } from "./hooks/index.js";
 import { AnthropicClient } from "./model/anthropic.js";
 import type { ModelClient, ModelDelta, ModelResponse } from "./model/types.js";
 import { PermissionSystem } from "./permissions/index.js";
@@ -21,6 +22,7 @@ import type {
   ConversationMessage,
   EffortLevel,
   ModelRouter,
+  PermissionRequest,
   RetryJudge,
   RunOptions,
   Session,
@@ -43,6 +45,8 @@ const DEFAULT_MAX_TURNS = 20;
 const DEFAULT_MAX_TOKENS = 16_000;
 /** How far a turn cut off mid tool call may raise max_tokens, doubling each time. */
 const MAX_RETRY_TOKENS = 64_000;
+/** How many times a Stop hook may send the model back to work in one run. */
+const MAX_STOP_CONTINUATIONS = 5;
 
 const BASE_SYSTEM_PROMPT = `You are a helpful, capable AI assistant with access to tools.
 You can read and write files, run shell commands, search the web, and more.
@@ -72,7 +76,9 @@ export class Agent {
    * serves for resumeSessionId, and Required<> under
    * exactOptionalPropertyTypes cannot hold an absent value.
    */
-  private config: Required<Omit<AgentConfig, "router" | "client" | "retryJudge" | "stopJudge" | "effort" | "compactAt">>;
+  private config: Required<
+    Omit<AgentConfig, "router" | "client" | "retryJudge" | "stopJudge" | "effort" | "compactAt" | "hooks">
+  >;
   private registry: ToolRegistry;
   private permissions: PermissionSystem;
   private sessions: SessionManager;
@@ -82,6 +88,11 @@ export class Agent {
   private stopJudge: StopJudge | undefined;
   private effort: EffortLevel | undefined;
   private compactAt: number | false | undefined;
+  private hooks: HooksConfig | undefined;
+  /** The session the current run is on, for hook input. */
+  private sessionId = "";
+  /** Set when a hook answers `continue: false`: the run ends after the call in progress. */
+  private hookStop: string | undefined;
 
   constructor(config: AgentConfig = {}, registry?: ToolRegistry) {
     this.client = config.client ?? new AnthropicClient();
@@ -110,9 +121,13 @@ export class Agent {
     this.stopJudge = config.stopJudge;
     this.effort = config.effort;
     this.compactAt = config.compactAt;
+    this.hooks = config.hooks;
 
     this.registry = registry ?? globalRegistry;
-    this.permissions = new PermissionSystem(this.config.permissions);
+    this.permissions = new PermissionSystem({
+      ...this.config.permissions,
+      ...(this.hooks?.PermissionRequest ? { onAsk: (request: PermissionRequest) => this.permissionRequestHook(request) } : {}),
+    });
     this.sessions = new SessionManager(this.config.sessionDir || undefined);
   }
 
@@ -142,6 +157,8 @@ export class Agent {
       resumed: session.messages.length > 0,
     });
     await this.route(prompt, session);
+    this.sessionId = session.metadata.sessionId;
+    this.hookStop = undefined;
 
     const toolCalls: ToolCallRecord[] = [];
     const usageAccum: AgentUsage = {
@@ -167,6 +184,26 @@ export class Agent {
     }
     session.metadata.environment = environment;
 
+    if (session.messages.length === 0) {
+      const start = await this.hook("SessionStart", { source: "startup" });
+      notes.push(...start.context.map((c) => `[SessionStart hook: ${c}]`));
+    }
+    const submitted = await this.hook("UserPromptSubmit", { prompt });
+    if (submitted.block !== undefined || submitted.stop !== undefined) {
+      // The prompt is dropped, as Claude Code drops it: nothing reaches the model or the session.
+      const result: AgentResult = {
+        text: `Blocked by a UserPromptSubmit hook: ${submitted.block ?? submitted.stop}`,
+        stopReason: "blocked",
+        turns: 0,
+        toolCalls: [],
+        usage: usageAccum,
+        sessionId: session.metadata.sessionId,
+      };
+      await this.emit({ type: "done", result });
+      return result;
+    }
+    notes.push(...submitted.context.map((c) => `[UserPromptSubmit hook: ${c}]`));
+
     // The session may already be past the budget: its last call said how big it was.
     let promptTokens = session.metadata.contextTokens ?? 0;
     if (messages.length > 0 && promptTokens >= this.compactionTrigger()) {
@@ -179,6 +216,7 @@ export class Agent {
     messages.push({ role: "user", content: userTurn(prompt, notes) });
 
     let turn = 0;
+    let stopContinuations = 0;
     let finalText = "";
     // Only a `break` below overwrites this. Leaving the loop through its own
     // condition means the last turn still asked for tools, so the limit —
@@ -248,6 +286,12 @@ export class Agent {
           messages.push({ role: "user", content: toolResults });
           await save();
 
+          if (this.hookStop !== undefined) {
+            finalStopReason = "stopped_by_hook";
+            finalText = `Stopped by a hook: ${this.hookStop}`;
+            break;
+          }
+
           // Every tool_use has its result by now, so stopping here leaves a
           // transcript that resumes like any other.
           const stopJudge = this.stopJudge;
@@ -284,6 +328,18 @@ export class Agent {
 
         // end_turn, or any other stop reason
         messages.push({ role: "assistant", content: response.content });
+
+        // A Stop hook can send the model back to work, a few times at most;
+        // stop_hook_active tells the hook it already has once this run.
+        if (response.stopReason === "end_turn" && stopContinuations < MAX_STOP_CONTINUATIONS) {
+          const stop = await this.hook("Stop", { stop_hook_active: stopContinuations > 0 });
+          if (stop.block !== undefined) {
+            stopContinuations++;
+            messages.push({ role: "user", content: `[Stop hook: ${stop.block}]` });
+            await save();
+            continue;
+          }
+        }
         finalStopReason = response.stopReason;
         finalText = text || notice || "";
         break;
@@ -571,16 +627,30 @@ export class Agent {
     if (!checked.ok) {
       return refuse("invalid input", `Error: invalid input for ${tool.name}: ${checked.error}. Fix the arguments and call it again.`);
     }
-    const input = checked.value;
+    let input = checked.value;
+
+    const pre = await this.hook("PreToolUse", { tool_name: tool.name, tool_input: input, tool_use_id: toolUseId }, tool.name);
+    if (pre.stop !== undefined) this.hookStop = pre.stop;
+    if (pre.block !== undefined) return refuse("blocked by hook", `Blocked by a PreToolUse hook: ${pre.block}`);
+    if (pre.updatedInput) {
+      const rewritten = tool.validate(pre.updatedInput);
+      if (!rewritten.ok) {
+        return refuse("invalid input", `Error: a PreToolUse hook rewrote the input into one ${tool.name} does not accept: ${rewritten.error}`);
+      }
+      input = rewritten.value;
+    }
 
     // Permission check
-    const allowed = await this.permissions.check({
-      toolName: tool.name,
-      input,
-      description: tool.summarize(input),
-      toolUseId,
-      cwd: context.cwd,
-    });
+    const allowed = await this.permissions.check(
+      {
+        toolName: tool.name,
+        input,
+        description: tool.summarize(input),
+        toolUseId,
+        cwd: context.cwd,
+      },
+      pre.allow ? { hook: "allow" } : pre.ask ? { hook: "ask" } : {},
+    );
     if (!allowed) {
       return refuse("permission denied", `Permission denied for tool: ${tool.name}`);
     }
@@ -618,10 +688,19 @@ export class Agent {
     toolCallRecords.push({ toolName: tool.name, input, result: toolResult, durationMs });
     await this.emit({ type: "tool_end", toolUseId, toolName: tool.name, result: toolResult, durationMs });
 
+    const post = await this.hook(
+      "PostToolUse",
+      { tool_name: tool.name, tool_input: input, tool_use_id: toolUseId, tool_response: toolResult },
+      tool.name,
+    );
+    if (post.stop !== undefined) this.hookStop = post.stop;
+    const notes = [...(post.block !== undefined ? [post.block] : []), ...post.context].map((n) => `[PostToolUse hook: ${n}]`);
+    const content = toolResult.type === "success" ? toolResult.output : `Error: ${toolResult.message}`;
+
     return {
       type: "tool_result",
       tool_use_id: toolUseId,
-      content: toolResult.type === "success" ? toolResult.output : `Error: ${toolResult.message}`,
+      content: notes.length > 0 ? `${content}\n\n${notes.join("\n")}` : content,
       is_error: toolResult.type === "error",
     };
   }
@@ -637,6 +716,31 @@ export class Agent {
     const note = tool.rereadHint ?? (await saveFullOutput(sessionId, toolUseId, text));
     const cut = truncateMiddle(text, MAX_TOOL_OUTPUT_CHARS, tool.outputHeadShare, note);
     return result.type === "success" ? { type: "success", output: cut } : { type: "error", message: cut };
+  }
+
+  /** Run the hooks for one event with the input every event carries. */
+  private hook(event: HookEvent, fields: Partial<HookInput>, toolName?: string): Promise<HookOutcome> {
+    if (!this.hooks?.[event]) return Promise.resolve({ context: [] });
+    const input: HookInput = {
+      hook_event_name: event,
+      session_id: this.sessionId,
+      cwd: this.config.cwd,
+      permission_mode: "default",
+      ...(this.config.persistSessions && this.sessionId ? { transcript_path: this.sessions.pathFor(this.sessionId) } : {}),
+      ...fields,
+    };
+    return runHooks(this.hooks, event, input, toolName);
+  }
+
+  /** The PermissionRequest hook, asked before the gate and the user. */
+  private async permissionRequestHook(request: PermissionRequest): Promise<"allow" | "deny" | undefined> {
+    const outcome = await this.hook(
+      "PermissionRequest",
+      { tool_name: request.toolName, tool_input: request.input, ...(request.toolUseId ? { tool_use_id: request.toolUseId } : {}) },
+      request.toolName,
+    );
+    if (outcome.block !== undefined) return "deny";
+    return outcome.allow ? "allow" : undefined;
   }
 
   /** The last few calls, as the stop judge sees them. */

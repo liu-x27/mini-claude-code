@@ -148,6 +148,7 @@ console.log(result.text, result.usage.estimatedCostUsd);
 | `--resume <id>` | continue a saved session |
 | `--allow-all` / `--ask` / `--read-only` | permission preset (default `--ask`) |
 | `--allow <rule>` / `--deny <rule>` | e.g. `"Bash(npm test *)"`, `"Read(~/.ssh/**)"`; repeatable, a deny always wins |
+| `--hooks <file>` | lifecycle hooks, in Claude Code's settings format |
 | `--gate [backend]` | score the `ask` cases: `llm` (default) or `allowlist` (offline) |
 | `--gate-threshold <n>` | auto-allow below this P; default 0.20, model-specific |
 | `--cheap-model <id>` | route each new session between this and `--model`; needs `--gate` |
@@ -210,6 +211,17 @@ answers it. That second path is why the prompt is injectable at all; until recen
 server ran `defaultMode: "allow"` and executed every tool call without asking, which was
 the one configuration the CLI never offered. It fails closed on a timeout and on the tab
 closing.
+
+**Hooks** (`src/hooks/`) take Claude Code's format — the same settings JSON, the same
+input on stdin, exit code 2 to block, the same JSON answers — so its hook scripts run here
+unchanged: `SessionStart`, `UserPromptSubmit`, `PreToolUse` (block, rewrite the input, or
+answer allow or ask), `PermissionRequest` (asked before the gate and the user),
+`PostToolUse` and `Stop` (which can send the model back to work, five times a run at
+most). Handlers are shell commands, HTTP endpoints or, from the library, functions. A
+hook's allow never outweighs a deny rule, and a hook that crashes or times out is logged
+and ignored rather than blocking. XavierJev's own Claude Code server works as a
+`PermissionRequest` hook without a change: pointed at it with `--gate` off, the CLI had
+`wc -l src/agent.ts` cleared at P=0.074 and asked nothing.
 
 **Sessions** (`src/session/`) are JSON transcripts under `~/.agent-app/sessions`, with
 token and cost totals. Passing `resumeSessionId` replays one into the next run. They are

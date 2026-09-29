@@ -21,6 +21,7 @@ export class PermissionSystem {
   private context: PermissionContext;
   private prompt: PermissionPrompt;
   private gate: RiskGate | undefined;
+  private onAsk: PermissionContext["onAsk"];
   /** Tail of the queue of questions to the user — see promptUser(). */
   private promptQueue: Promise<unknown> = Promise.resolve();
 
@@ -34,6 +35,7 @@ export class PermissionSystem {
     };
     this.prompt = context?.prompt ?? stdinPrompt;
     this.gate = context?.gate;
+    this.onAsk = context?.onAsk;
   }
 
   /**
@@ -41,8 +43,13 @@ export class PermissionSystem {
    * Returns true if allowed, false if denied.
    * In "ask" mode, interactively prompts the user.
    */
-  async check(request: PermissionRequest): Promise<boolean> {
+  async check(request: PermissionRequest, options: { hook?: "allow" | "ask" } = {}): Promise<boolean> {
     const mode = this.resolveMode(request);
+
+    // A PreToolUse hook may allow a call or insist it is asked about, but it
+    // cannot reopen a call a rule denies.
+    if (mode !== "deny" && options.hook === "allow") return true;
+    if (mode !== "deny" && options.hook === "ask") return this.promptUser(request);
 
     switch (mode) {
       case "allow":
@@ -65,6 +72,12 @@ export class PermissionSystem {
    * not something a judge gets to reopen.
    */
   private async askOrGate(request: PermissionRequest): Promise<boolean> {
+    if (this.onAsk) {
+      const answer = await this.onAsk(request);
+      if (answer === "allow") return true;
+      if (answer === "deny") return false;
+    }
+
     if (this.gate) {
       const verdict = await this.gate(request);
 
@@ -149,6 +162,7 @@ export class PermissionSystem {
     if (update.defaultMode !== undefined) this.context.defaultMode = update.defaultMode;
     if (update.rules) this.context.rules = [...update.rules, ...this.context.rules];
     if (update.gate !== undefined) this.gate = update.gate;
+    if (update.onAsk !== undefined) this.onAsk = update.onAsk;
   }
 
   /** Install or remove the risk gate. Pass undefined to go back to always asking. */

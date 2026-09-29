@@ -15,6 +15,7 @@ import type {
   ToolFailure,
   TracedCall,
 } from "xavierjev";
+import type { HooksConfig } from "./hooks/index.js";
 
 // ─────────────────────────────────────────────
 // Model & API
@@ -117,6 +118,11 @@ export interface PermissionContext {
    * cases without a prompt. Off by default.
    */
   gate?: RiskGate;
+  /**
+   * Asked first when a call would otherwise go to the gate and the user —
+   * the PermissionRequest hook. Undefined means it has no answer.
+   */
+  onAsk?: (request: PermissionRequest) => Promise<"allow" | "deny" | undefined>;
 }
 
 export type PermissionDecision = "allow" | "deny" | "always-allow" | "always-deny";
@@ -255,6 +261,13 @@ export interface AgentConfig {
    * context window, at most 150K. `false` never compacts.
    */
   compactAt?: number | false;
+
+  /**
+   * Lifecycle hooks in Claude Code's format (SessionStart, UserPromptSubmit,
+   * PreToolUse, PermissionRequest, PostToolUse, Stop), so its hook scripts and
+   * settings work here unchanged. See `src/hooks`.
+   */
+  hooks?: HooksConfig;
 
   /** Stream output tokens as they arrive */
   stream?: boolean;

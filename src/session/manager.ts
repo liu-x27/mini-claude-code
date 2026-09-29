@@ -148,6 +148,11 @@ export class SessionManager {
     }
   }
 
+  /** Where a session's file is, for a hook's transcript_path. */
+  pathFor(sessionId: string): string {
+    return this.filePath(sessionId);
+  }
+
   /**
    * Session ids arrive from the CLI and from HTTP bodies and URLs, and go
    * straight into a path. Anything but the UUID `create` hands out is
