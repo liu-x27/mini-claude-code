@@ -150,21 +150,29 @@ console.log(result.text, result.usage.estimatedCostUsd);
 | `--gate [backend]` | score the `ask` cases: `llm` (default) or `allowlist` (offline) |
 | `--gate-threshold <n>` | auto-allow below this P; default 0.20, model-specific |
 | `--cheap-model <id>` | route prompts between this and `--model`; needs `--gate` |
+| `--effort <level>` | `low` … `max`, sent as `output_config.effort`; unset, the model's own default |
 
 In the REPL: `/help` `/tools` `/cost` `/sessions` `/resume <id>` `/new` `/model [id]`
-`/permissions <preset>` `/gate [backend]` `/cwd [path]` `/exit`.
+`/permissions <preset>` `/gate [backend]` `/cwd [path]` `/exit`. Ctrl+C stops the run in
+progress — calls already running finish and the session is saved — and a second one quits.
 
 ## How it works
 
 **The loop** (`src/agent.ts`) sends a prompt, executes any `tool_use` blocks the model
 returns, feeds the results back, and repeats until the model stops asking for tools or
-`maxTurns` runs out. Tool calls in one response run concurrently, capped by
-`AGENT_MAX_CONCURRENT_TOOLS`; their permission prompts queue, so the user is asked one
-thing at a time. `run(prompt, { signal })` can be aborted, and saves the session up to
-that point. Consumers subscribe with `agent.on(event => …)` and get `session`,
-`tool_request` → `tool_denied` or `tool_start` → `tool_end` (all keyed by the call's
-id), `turn_start`, `turn_end` and `done`, plus `text_delta` / `thinking_delta` when
-`stream: true`.
+`maxTurns` runs out. Calls that change nothing — Read, Glob, Grep, WebFetch — run
+concurrently, capped by `AGENT_MAX_CONCURRENT_TOOLS`; Bash, Write and Edit wait for what
+came before them and run one at a time, in the order asked. Permission prompts queue, so
+the user is asked one thing at a time. Each call's input is checked against its tool's
+schema before anything else, and each result the model sees is capped at 40,000
+characters (`AGENT_MAX_TOOL_OUTPUT`), start and end kept. A reply that max_tokens cuts off
+in the middle of a tool call is asked again with twice the room, up to 64,000; one that
+stays cut off, or ends in a refusal, is neither run nor saved, since a `tool_use` without
+its result makes every later request fail. `run(prompt, { signal })` can be aborted, and
+saves the session up to that point. Consumers subscribe with `agent.on(event => …)` and
+get `session`, `tool_request` → `tool_denied` or `tool_start` → `tool_end` (all keyed by
+the call's id), `turn_start`, `turn_retry`, `turn_end` and `done`, plus `text_delta` /
+`thinking_delta` when `stream: true`.
 
 **The model** (`src/model/`) is behind a `ModelClient`: `AnthropicClient` by default,
 `OpenAICompatibleClient` for any Chat Completions endpoint, or a scripted one in tests.
@@ -173,7 +181,9 @@ own edge, so the loop never branches on provider.
 
 **Tools** (`src/tools/`) subclass `Tool<T>`, declaring a JSON Schema and a `summarize()`
 used for permission prompts. `ToolRegistry` resolves the per-run set from `allowedTools`
-and `disallowedTools`.
+and `disallowedTools`. Bash runs in bash — Git Bash on Windows, cmd.exe only when there is
+none, and the tool's description tells the model which (`AGENT_SHELL` names another).
+Output that is not UTF-8 is decoded with the console's code page, line by line.
 
 **Permissions** (`src/permissions/`) resolve each call to `allow`, `ask`, or `deny` by
 most-specific-rule-wins, with presets for read-only and ask-before-dangerous. `ask` goes
@@ -186,7 +196,12 @@ the one configuration the CLI never offered. It fails closed on a timeout and on
 closing.
 
 **Sessions** (`src/session/`) are JSON transcripts under `~/.agent-app/sessions`, with
-token and cost totals. Passing `resumeSessionId` replays one into the next run.
+token and cost totals. Passing `resumeSessionId` replays one into the next run. They are
+written after every turn, and atomically, rather than once at the end: a run whose model
+call failed on its fifth turn used to leave nothing behind, though the first four had
+already changed the disk. A run that ends early — the API failed, the caller aborted,
+the process died mid tool call — records why, and the next run says so to the model
+before its prompt.
 
 ### Three things the REPL had to solve
 
@@ -608,7 +623,7 @@ other the way one compound yes/no did.
 ## Development
 
 ```bash
-npm test               # 56 assertions, mocked — no API key needed
+npm test               # 94 assertions, mocked — no API key needed
 npm run eval:risk-gate # measure the gate on the dev set — no API key needed
 npm run eval:risk-gate -- --cases test3  # a held-out set; read its docstring first
 npm run eval:routing   # measure the model router — needs a judge
@@ -651,6 +666,14 @@ stand-in endpoint: answers come back in option order, renormalised over the labe
 coverage reported beside them, and a first token with no label in it is an error rather
 than a guess.
 
+Section 14 of the suite is one check per failure found on 2026-09-28 by driving the
+harness itself with a scripted model, most of them reproduced against the code before
+the fix. Among them: a Grep call whose `glob` ran a shell command, with no prompt and
+under `--read-only`; two Edits of one file in one turn, one of which was lost in 92–98 of
+100 turns on a 1 MB file while both reported success; a reply cut off mid tool call
+saved as it was, which made every later resume of that session fail; a `$$` in an Edit's
+new text written back as `$`; and on Windows, every Bash command handed to cmd.exe.
+
 Reproducing the tables takes two commands, and the bare ones are not the offline ones —
 both runners default to `--backend llm`:
 
@@ -668,8 +691,8 @@ under piped input — has been exercised end to end against an Anthropic-compati
 endpoint (MiniMax M2), and again after the web server moved onto `Agent` — CLI and
 browser, through both clients — against a local Ollama. It is not in CI: it needs a live
 model. Cost figures
-come from the table in `src/utils/cost.ts`, which prices Anthropic models, so they are
-meaningless against a third-party endpoint.
+come from the table in `src/utils/cost.ts`, which prices Anthropic models; any other
+model is reported as cost unknown rather than priced as Claude Opus 5, which it used to be.
 
 Both gate paths have been watched in a real session, with the loop on one provider and
 the judge on another: `wc -l src/agent.ts` cleared at P=0.074 without a prompt,
