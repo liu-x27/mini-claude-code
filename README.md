@@ -1,22 +1,26 @@
 # mini-claude-code
 
 A small, readable agent framework built on the Claude API — the agentic loop, a tool
-registry, a permission system, and session persistence, with three ways to drive it:
-a terminal REPL, a web UI, and a library API.
+registry, a permission system, and session persistence — with four ways to drive it: a
+terminal REPL (or `-p`, with JSON output for scripts), a web UI, the Agent Client
+Protocol for an editor, and a library API.
 
 It is deliberately not a wrapper around someone else's agent SDK. The loop, the tool
-protocol, and the permission model are all here in ~5,000 lines of TypeScript you can
-read in an afternoon.
+protocol, and the permission model are all in `src/`, about 5,300 lines of TypeScript.
 
 ```
-   CLI (REPL)  ─┐
-   Web UI      ─┼─►  Agent  ─►  ModelClient  ─►  Claude API, or any OpenAI-compatible API
-   Library     ─┘      │
-                       ├─ ModelRouter    optional — picks the tier before turn one
-                       ├─ ToolRegistry   Bash · Read · Write · Edit · Glob · Grep · WebFetch
-                       ├─ PermissionSystem   allow / ask / deny, per tool
-                       │    └─ RiskGate      optional — clears the easy "ask" cases
-                       └─ SessionManager     persisted transcripts, resumable
+   CLI (REPL, -p) ─┐
+   Web UI         ─┤
+   ACP (--acp)    ─┼─►  Agent  ─►  ModelClient  ─►  Claude API, or any OpenAI-compatible API
+   Library        ─┘      │
+                          ├─ ModelRouter       optional — picks the tier once per session
+                          ├─ ToolRegistry      Bash · Read · Write · Edit · Glob · Grep · WebFetch
+                          │                    · Task · TodoWrite · Skill · MCP servers' tools
+                          ├─ PermissionSystem  rules per tool or argument; a deny always wins
+                          │    ├─ Hooks         Claude Code's format — PreToolUse, PermissionRequest, …
+                          │    └─ RiskGate      optional — clears the easy Bash "ask" cases
+                          ├─ Context           AGENTS.md, skills, prompt caching, compaction
+                          └─ SessionManager    saved every turn, resumable
 ```
 
 ## Quickstart
