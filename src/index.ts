@@ -19,7 +19,7 @@
 export { Agent } from "./agent.js";
 
 // Model APIs — what the agent loop calls
-export { AnthropicClient, OpenAICompatibleClient, toOpenAIMessages } from "./model/index.js";
+export { AnthropicClient, OpenAICompatibleClient, REASONING_SIGNATURE, toOpenAIMessages } from "./model/index.js";
 export type {
   AnthropicClientOptions,
   ModelClient,

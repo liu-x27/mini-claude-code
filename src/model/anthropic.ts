@@ -1,5 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
-import type { ModelClient, ModelDelta, ModelRequest, ModelResponse } from "./types.js";
+import { type ModelClient, type ModelDelta, type ModelRequest, type ModelResponse, REASONING_SIGNATURE } from "./types.js";
 
 export interface AnthropicClientOptions {
   apiKey?: string | undefined;
@@ -82,7 +82,9 @@ export function buildParams(request: ModelRequest): Anthropic.MessageCreateParam
     system: request.enableCaching
       ? [{ type: "text" as const, text: request.system, cache_control: { type: "ephemeral" as const } }]
       : request.system,
-    messages: request.enableCaching ? withCacheBreakpoint(request.messages) : request.messages,
+    messages: request.enableCaching
+      ? withCacheBreakpoint(withoutForeignReasoning(request.messages))
+      : withoutForeignReasoning(request.messages),
     thinking: request.thinking as Anthropic.ThinkingConfigParam,
     // Only when asked for: a default here would override the model's own and
     // be rejected by the models and compatible endpoints that do not take it.
@@ -92,6 +94,20 @@ export function buildParams(request: ModelRequest): Anthropic.MessageCreateParam
       tool_choice: (request.toolChoice === "none" ? { type: "none" } : { type: "auto" }) as Anthropic.ToolChoice,
     }),
   };
+}
+
+/**
+ * The history without reasoning an OpenAI-compatible endpoint returned, as
+ * when a web session switches provider: its signature would never verify
+ * here. Removed the same way on every request, so the prefix stays stable.
+ */
+function withoutForeignReasoning(messages: Anthropic.MessageParam[]): Anthropic.MessageParam[] {
+  const foreign = (b: Anthropic.ContentBlockParam) => b.type === "thinking" && b.signature === REASONING_SIGNATURE;
+  return messages.map((m) => {
+    if (typeof m.content === "string" || !m.content.some(foreign)) return m;
+    const kept = m.content.filter((b) => !foreign(b));
+    return { ...m, content: kept.length > 0 ? kept : [{ type: "text", text: "(no reply)" }] };
+  });
 }
 
 /**

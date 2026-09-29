@@ -45,7 +45,8 @@ import type {
 } from "../src/types.js";
 import { Agent } from "../src/agent.js";
 import { Tool } from "../src/tools/base.js";
-import { toOpenAIMessages } from "../src/model/openai.js";
+import { OpenAICompatibleClient, toOpenAIMessages } from "../src/model/openai.js";
+import { REASONING_SIGNATURE } from "../src/model/types.js";
 import type { ModelClient, ModelRequest, ModelResponse } from "../src/model/types.js";
 import type Anthropic from "@anthropic-ai/sdk";
 import { renderMarkdown } from "../client/src/lib/markdown.js";
@@ -1712,6 +1713,60 @@ await checkAsync("压缩：总结失败就不压缩、不留归档、照常跑�
   const never = new ScriptedClient([{ ...calls(["t1", "Echo", { text: "x" }]), usage: bigPrompt }, said("done")]);
   await scriptedAgent(never, { compactAt: false }).agent.run("go");
   if (never.seen.length !== 2) throw new Error("关掉压缩还是压缩了");
+});
+
+await checkAsync("reasoning_content：兼容端点流回的推理存进历史，下一次请求原样带回；Anthropic 那边不发", async () => {
+  // DeepSeek 的思考模式默认开启，带工具的对话不回传 reasoning_content 就 400
+  const bodies: Array<{ messages: Array<Record<string, unknown>> }> = [];
+  const chunk = (delta: Record<string, unknown>, extra: Record<string, unknown> = {}) =>
+    `data: ${JSON.stringify({ id: "c", object: "chat.completion.chunk", choices: [{ index: 0, delta, ...extra }] })}\n\n`;
+  const fake = http.createServer((req, res) => {
+    let raw = "";
+    req.on("data", (d) => (raw += d));
+    req.on("end", () => {
+      bodies.push(JSON.parse(raw));
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      if (bodies.length === 1) {
+        res.write(chunk({ role: "assistant", reasoning_content: "think " }));
+        res.write(chunk({ reasoning_content: "hard" }));
+        res.write(chunk({ tool_calls: [{ index: 0, id: "call_1", function: { name: "Echo", arguments: '{"text":"x"}' } }] }));
+        res.write(chunk({}, { finish_reason: "tool_calls" }));
+      } else {
+        res.write(chunk({ content: "done" }));
+        res.write(chunk({}, { finish_reason: "stop" }));
+      }
+      res.end("data: [DONE]\n\n");
+    });
+  });
+  await new Promise<void>((r) => fake.listen(0, "127.0.0.1", r));
+  try {
+    const { port } = fake.address() as { port: number };
+    const client = new OpenAICompatibleClient({ apiKey: "k", baseURL: `http://127.0.0.1:${port}/v1` });
+    const thoughts: string[] = [];
+    const agent = new Agent({ client, model: "deepseek-flash", persistSessions: false, permissions: PermissionPresets.allowAll(), stream: true }, loopRegistry);
+    agent.on((e) => {
+      if (e.type === "thinking_delta") thoughts.push(e.delta);
+    });
+    const result = await agent.run("go");
+    if (result.text !== "done") throw new Error(`结果: ${result.text}`);
+    if (thoughts.join("") !== "think hard") throw new Error(`推理没有流出来: ${JSON.stringify(thoughts)}`);
+    const assistant = bodies[1]!.messages.find((m) => m["role"] === "assistant");
+    if (assistant?.["reasoning_content"] !== "think hard") throw new Error(`第二次请求没带回推理: ${JSON.stringify(assistant)}`);
+  } finally {
+    fake.closeAllConnections();
+    await new Promise((r) => fake.close(r));
+  }
+
+  const history: ModelRequest["messages"] = [
+    { role: "user", content: "go" },
+    { role: "assistant", content: [{ type: "thinking", thinking: "think hard", signature: REASONING_SIGNATURE }, { type: "text", text: "ok" }] },
+    { role: "user", content: "again" },
+  ];
+  const sent = buildParams({
+    model: "claude-opus-5-5", system: "s", messages: history, tools: [], maxTokens: 100,
+    thinking: { type: "adaptive" }, enableCaching: false, stream: false,
+  });
+  if (JSON.stringify(sent.messages).includes("think hard")) throw new Error("兼容端点的推理不该发给 Anthropic");
 });
 
 await checkAsync("effort：设了才发 output_config.effort，没设就不发", async () => {

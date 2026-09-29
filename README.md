@@ -183,7 +183,10 @@ own edge, so the loop never branches on provider. With caching on, the Anthropic
 breakpoints, on the system prompt (which covers the tools) and on the conversation's last
 block, so each turn reads the history before it from cache instead of paying for it again.
 The system prompt holds nothing that changes within a session: the working directory and
-the date are appended to the conversation when they change.
+the date are appended to the conversation when they change. Reasoning an OpenAI-compatible endpoint streams
+back (`reasoning_content`, or `reasoning`) is kept in the history and returned on the next
+request, which DeepSeek's thinking mode requires once tools are involved; the Anthropic
+client leaves it out.
 
 **Tools** (`src/tools/`) subclass `Tool<T>`, declaring a JSON Schema and a `summarize()`
 used for permission prompts. `ToolRegistry` resolves the per-run set from `allowedTools`

@@ -1,7 +1,7 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import OpenAI from "openai";
 import { logger } from "../utils/logger.js";
-import type { ModelClient, ModelDelta, ModelRequest, ModelResponse } from "./types.js";
+import { type ModelClient, type ModelDelta, type ModelRequest, type ModelResponse, REASONING_SIGNATURE } from "./types.js";
 
 export interface OpenAICompatibleClientOptions {
   apiKey?: string | undefined;
@@ -59,6 +59,7 @@ export class OpenAICompatibleClient implements ModelClient {
     );
 
     let text = "";
+    let reasoning = "";
     let finishReason: string | null = null;
     let inputTokens = 0;
     let outputTokens = 0;
@@ -73,6 +74,14 @@ export class OpenAICompatibleClient implements ModelClient {
       if (!choice) continue;
 
       const delta = choice.delta;
+      // DeepSeek, Kimi and Qwen stream their reasoning as reasoning_content;
+      // Ollama and OpenRouter as reasoning.
+      const loose = delta as { reasoning_content?: unknown; reasoning?: unknown };
+      const thought = loose.reasoning_content ?? loose.reasoning;
+      if (typeof thought === "string" && thought) {
+        reasoning += thought;
+        if (request.stream) await onDelta({ type: "thinking", thinking: thought });
+      }
       if (delta.content) {
         text += delta.content;
         if (request.stream) await onDelta({ type: "text", text: delta.content });
@@ -97,7 +106,11 @@ export class OpenAICompatibleClient implements ModelClient {
     );
 
     return {
-      content: [...(text ? [{ type: "text" as const, text }] : []), ...toolUses],
+      content: [
+        ...(reasoning ? [{ type: "thinking" as const, thinking: reasoning, signature: REASONING_SIGNATURE }] : []),
+        ...(text ? [{ type: "text" as const, text }] : []),
+        ...toolUses,
+      ],
       // Keyed on the calls, not on finish_reason: several compatible
       // endpoints report "stop" on a reply that does carry tool calls.
       stopReason: toolUses.length > 0 ? "tool_use" : toStopReason(finishReason),
@@ -110,8 +123,11 @@ export class OpenAICompatibleClient implements ModelClient {
  * Anthropic-shaped history → Chat Completions messages.
  *
  * An assistant turn's tool_use blocks become `tool_calls`; a user turn's
- * tool_result blocks become one `tool` message each, in order; thinking
- * blocks are dropped, since no compatible endpoint takes them back.
+ * tool_result blocks become one `tool` message each, in order. Reasoning an
+ * endpoint returned goes back as `reasoning_content` on its turn: DeepSeek's
+ * thinking mode, on by default, answers 400 to a tool conversation that
+ * leaves it out. Anthropic's thinking blocks are dropped, since no
+ * compatible endpoint takes them.
  */
 export function toOpenAIMessages(
   system: string,
@@ -128,7 +144,11 @@ export function toOpenAIMessages(
     if (m.role === "assistant") {
       const text = m.content.map((b) => (b.type === "text" ? b.text : "")).join("");
       const toolUses = m.content.filter((b): b is Anthropic.ToolUseBlockParam => b.type === "tool_use");
-      out.push(
+      const reasoning = m.content
+        .filter((b): b is Anthropic.ThinkingBlockParam => b.type === "thinking" && b.signature === REASONING_SIGNATURE)
+        .map((b) => b.thinking)
+        .join("");
+      const message = (
         toolUses.length > 0
           ? {
               role: "assistant",
@@ -139,8 +159,10 @@ export function toOpenAIMessages(
                 function: { name: b.name, arguments: JSON.stringify(b.input) },
               })),
             }
-          : { role: "assistant", content: text },
-      );
+          : { role: "assistant", content: text }
+      ) as OpenAI.Chat.ChatCompletionAssistantMessageParam & { reasoning_content?: string };
+      if (reasoning) message.reasoning_content = reasoning;
+      out.push(message);
       continue;
     }
 

@@ -29,6 +29,15 @@ export interface ModelRequest {
 
 export type ModelDelta = { type: "text"; text: string } | { type: "thinking"; thinking: string };
 
+/**
+ * The signature on a thinking block that holds an OpenAI-compatible
+ * endpoint's `reasoning_content`. History is Anthropic-shaped, so the
+ * reasoning is kept as a thinking block; this marks it as not Anthropic's,
+ * which the Anthropic client strips (its signature would never verify) and
+ * the OpenAI-compatible client sends back.
+ */
+export const REASONING_SIGNATURE = "openai-compatible:reasoning_content";
+
 export interface ModelResponse {
   /** Blocks to append to history as they are, thinking signatures included. */
   content: Anthropic.ContentBlockParam[];
