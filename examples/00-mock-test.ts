@@ -58,6 +58,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import * as http from "node:http";
+import { spawn } from "node:child_process";
 import chalk from "chalk";
 import {
   type Board,
@@ -2018,6 +2019,75 @@ await checkAsync("TodoWrite：整张清单每次重写，存进会话、发出�
   if (ev.length !== 1) throw new Error(`todos 事件 ${ev.length} 个`);
   const saved = await new SessionManager(dir).load(result.sessionId);
   if (saved?.metadata.todos?.length !== 3 || saved.metadata.todos[1]?.status !== "in_progress") throw new Error("清单没存进会话");
+});
+
+await checkAsync("CLI -p 的 json / stream-json：stdout 只有 JSON；退出码说明结局；没人可问时拒绝并在 stderr 说明", async () => {
+  // 一个会流式回答的假 Messages 端点：第一次要调 Bash，看到工具结果后说 done
+  const sse = (events: Array<[string, Record<string, unknown>]>) =>
+    events.map(([event, data]) => `event: ${event}\ndata: ${JSON.stringify({ type: event, ...data })}\n\n`).join("");
+  const opening = { message: { id: "msg", type: "message", role: "assistant", model: "fake", content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 12, output_tokens: 1 } } };
+  const fake = http.createServer((req, res) => {
+    let raw = "";
+    req.on("data", (d) => (raw += d));
+    req.on("end", () => {
+      const answered = raw.includes("tool_result");
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.end(
+        sse(
+          answered
+            ? [
+                ["message_start", opening],
+                ["content_block_start", { index: 0, content_block: { type: "text", text: "" } }],
+                ["content_block_delta", { index: 0, delta: { type: "text_delta", text: "done" } }],
+                ["content_block_stop", { index: 0 }],
+                ["message_delta", { delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: 3 } }],
+                ["message_stop", {}],
+              ]
+            : [
+                ["message_start", opening],
+                ["content_block_start", { index: 0, content_block: { type: "tool_use", id: "toolu_1", name: "Bash", input: {} } }],
+                ["content_block_delta", { index: 0, delta: { type: "input_json_delta", partial_json: JSON.stringify({ command: "echo headless-ok" }) } }],
+                ["content_block_stop", { index: 0 }],
+                ["message_delta", { delta: { stop_reason: "tool_use", stop_sequence: null }, usage: { output_tokens: 9 } }],
+                ["message_stop", {}],
+              ],
+        ),
+      );
+    });
+  });
+  await new Promise<void>((r) => fake.listen(0, "127.0.0.1", r));
+  const { port } = fake.address() as { port: number };
+  const cli = (args: string[]) =>
+    new Promise<{ code: number | null; out: string; err: string }>((resolve) => {
+      const child = spawn(process.execPath, [path.join(REPO_ROOT, "node_modules", "tsx", "dist", "cli.mjs"), path.join(REPO_ROOT, "cli", "index.ts"), ...args], {
+        cwd: REPO_ROOT,
+        env: { ...process.env, ANTHROPIC_API_KEY: "test", ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}`, AGENT_SESSION_DIR: path.join(scratch, "cli-sessions"), AGENT_LOG_LEVEL: "" },
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      let out = "";
+      let err = "";
+      child.stdout.on("data", (d) => (out += d));
+      child.stderr.on("data", (d) => (err += d));
+      child.on("close", (code) => resolve({ code, out, err }));
+    });
+  try {
+    const allowed = await cli(["-p", "go", "--model", "fake", "--output-format", "stream-json", "--allow", "Bash(echo *)"]);
+    const lines = allowed.out.trim().split("\n").map((l) => JSON.parse(l) as { type: string; [k: string]: unknown });
+    const types = lines.map((l) => l.type);
+    if (!types.includes("tool_start") || !types.includes("tool_end") || types.at(-1) !== "result") throw new Error(`事件: ${types.join(",")}`);
+    const end = lines.find((l) => l.type === "tool_end") as { result?: { output?: string } } | undefined;
+    if (!end?.result?.output?.includes("headless-ok")) throw new Error(`工具结果: ${JSON.stringify(end)}`);
+    const result = lines.at(-1) as { subtype?: string; result?: string };
+    if (allowed.code !== 0 || result.subtype !== "success" || result.result !== "done") throw new Error(`结局: ${allowed.code} ${JSON.stringify(result)}`);
+
+    const denied = await cli(["-p", "go", "--model", "fake", "--output-format", "json"]);
+    const only = denied.out.trim().split("\n");
+    if (only.length !== 1 || (JSON.parse(only[0]!) as { type?: string }).type !== "result") throw new Error(`json 模式应只有一行结果: ${denied.out}`);
+    if (!denied.err.includes("cannot ask")) throw new Error(`stderr 没说明为什么拒绝: ${denied.err.slice(0, 300)}`);
+  } finally {
+    fake.closeAllConnections();
+    await new Promise((r) => fake.close(r));
+  }
 });
 
 check("parseRule：读 Claude Code 的规则写法，写错就报错", () => {

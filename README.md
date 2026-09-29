@@ -142,7 +142,8 @@ console.log(result.text, result.usage.estimatedCostUsd);
 
 | Flag | |
 |---|---|
-| `-p, --print <prompt>` | run one prompt, print, exit |
+| `-p, --print <prompt>` | run one prompt, print, exit: 0 if the model finished, 2 if the run stopped short, 1 on an error, 130 if aborted |
+| `--output-format <f>` | with `-p`: `text`, `json` (one result object) or `stream-json` (an event per line, then the result); asks are denied, since nobody is there to answer |
 | `-m, --model <id>` | default `claude-opus-5` |
 | `-C, --cwd <path>` | working directory for file and shell tools |
 | `--resume <id>` | continue a saved session |

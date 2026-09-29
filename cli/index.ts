@@ -54,6 +54,7 @@ import type {
 import type { HooksConfig } from "../src/hooks/index.js";
 import { connectMcpServers, type McpConnection, type McpServerConfig } from "../src/mcp/index.js";
 import { addCost } from "../src/utils/cost.js";
+import { logger } from "../src/utils/logger.js";
 
 registerBuiltinTools();
 
@@ -155,6 +156,9 @@ class LineReader {
 
 type PermissionPreset = "allow-all" | "ask" | "read-only";
 
+type OutputFormat = "text" | "json" | "stream-json";
+const OUTPUT_FORMATS: OutputFormat[] = ["text", "json", "stream-json"];
+
 /** Which judge answers the risk question, or "off" to always ask. */
 type GateBackend = "off" | "allowlist" | "llm";
 
@@ -174,6 +178,8 @@ interface CliOptions {
   hooks: HooksConfig | undefined;
   /** From --mcp-config: a Claude Code .mcp.json, or just its "mcpServers" object. */
   mcpServers: Record<string, McpServerConfig> | undefined;
+  /** How -p reports: text for a person, json or stream-json for a program. */
+  outputFormat: OutputFormat;
   gate: GateBackend;
   /**
    * Auto-allow threshold for the gate. Undefined means the library default.
@@ -206,6 +212,7 @@ function parseArgs(argv: string[]): CliOptions {
     rules: [],
     hooks: undefined,
     mcpServers: undefined,
+    outputFormat: "text",
     gate: "off",
     gateThreshold: undefined,
     cheapModel: undefined,
@@ -264,6 +271,15 @@ function parseArgs(argv: string[]): CliOptions {
           console.error(chalk.red(`--hooks ${file}: ${err instanceof Error ? err.message : String(err)}`));
           process.exit(1);
         }
+        break;
+      }
+      case "--output-format": {
+        const value = next();
+        if (!(OUTPUT_FORMATS as string[]).includes(value)) {
+          console.error(chalk.red(`--output-format must be one of ${OUTPUT_FORMATS.join(", ")}, got ${value}`));
+          process.exit(1);
+        }
+        opts.outputFormat = value as OutputFormat;
         break;
       }
       case "--mcp-config": {
@@ -350,6 +366,10 @@ function parseArgs(argv: string[]): CliOptions {
     }
   }
 
+  if (opts.outputFormat !== "text" && opts.prompt === undefined) {
+    console.error(chalk.red("--output-format json and stream-json need -p: the REPL is for a person"));
+    process.exit(1);
+  }
   return opts;
 }
 
@@ -406,7 +426,12 @@ ${chalk.bold("Usage")}
   npm run cli [-- options]
 
 ${chalk.bold("Options")}
-  -p, --print <prompt>   Run one prompt, print the result, exit
+  -p, --print <prompt>   Run one prompt, print the result, exit. Exit code 0 when
+                         the model finished, 2 when the run stopped short (turn
+                         limit, stuck, refusal, ...), 1 on an error, 130 if aborted
+      --output-format <f> With -p: text (default), json (one result object) or
+                         stream-json (one JSON event per line, then the result).
+                         Asks are denied in json modes: nobody is there to answer
   -m, --model <id>       Model id (default: claude-opus-5)
   -C, --cwd <path>       Working directory for file and shell tools
       --resume <id>      Resume a saved session
@@ -677,7 +702,7 @@ class ReplState {
    * Build an Agent for the next turn, seeded with the current session so the
    * conversation carries over — see note 3 in the file header.
    */
-  buildAgent(): Agent {
+  buildAgent(render = true): Agent {
     const agent = new Agent({
       model: this.model,
       cwd: this.cwd,
@@ -696,7 +721,7 @@ class ReplState {
       stream: true,
       ...(this.sessionId ? { resumeSessionId: this.sessionId } : {}),
     });
-    attachRenderer(agent);
+    if (render) attachRenderer(agent);
     // Known as soon as the run starts: a run that throws has still saved its
     // session, and the next prompt should continue that one.
     agent.on((event) => {
@@ -865,7 +890,13 @@ function requireApiKey(): void {
 /** Stop reasons whose text was never streamed, so the user would not otherwise see why the run ended. */
 const EXPLAINED_STOPS = new Set(["stuck", "max_tokens", "refusal", "model_context_window_exceeded"]);
 
-async function runOnce(state: ReplState, prompt: string): Promise<void> {
+/** 0 finished, 2 stopped short of finishing, 130 stopped by the user; 1 is left for a run that threw. */
+function exitCodeFor(stopReason: string): number {
+  if (stopReason === "end_turn") return 0;
+  return stopReason === "aborted" ? 130 : 2;
+}
+
+async function runOnce(state: ReplState, prompt: string): Promise<string> {
   const agent = state.buildAgent();
   const controller = new AbortController();
   state.current = controller;
@@ -881,10 +912,76 @@ async function runOnce(state: ReplState, prompt: string): Promise<void> {
       console.log(chalk.yellow(`⏹  ${result.text}`));
     }
     console.log(formatUsage(result.usage));
+    return result.stopReason;
   } finally {
     state.current = undefined;
   }
 }
+
+/**
+ * One prompt for a program: stdout carries JSON and nothing else — for
+ * stream-json each event as a line (not the token deltas), then for both
+ * formats one result object — and everything meant for a person goes to
+ * stderr. Returns the exit code.
+ */
+async function runHeadless(state: ReplState, prompt: string, format: "json" | "stream-json"): Promise<number> {
+  const agent = state.buildAgent(false);
+  const controller = new AbortController();
+  state.current = controller;
+  const started = Date.now();
+  const line = (value: unknown) => stdout.write(`${JSON.stringify(value)}\n`);
+  if (format === "stream-json") {
+    agent.on((event) => {
+      if (event.type !== "text_delta" && event.type !== "thinking_delta" && event.type !== "done") line(event);
+    });
+  }
+  try {
+    const result = await agent.run(prompt, { signal: controller.signal });
+    const code = exitCodeFor(result.stopReason);
+    line({
+      type: "result",
+      subtype: code === 0 ? "success" : `stopped_${result.stopReason}`,
+      is_error: code !== 0,
+      stop_reason: result.stopReason,
+      result: result.text,
+      session_id: result.sessionId,
+      num_turns: result.turns,
+      tool_calls: result.toolCalls.length,
+      duration_ms: Date.now() - started,
+      usage: {
+        input_tokens: result.usage.inputTokens,
+        output_tokens: result.usage.outputTokens,
+        cache_creation_input_tokens: result.usage.cacheCreationTokens,
+        cache_read_input_tokens: result.usage.cacheReadTokens,
+      },
+      total_cost_usd: result.usage.estimatedCostUsd,
+    });
+    return code;
+  } catch (err) {
+    line({
+      type: "result",
+      subtype: "error_during_execution",
+      is_error: true,
+      error: err instanceof Error ? err.message : String(err),
+      session_id: state.sessionId ?? null,
+      duration_ms: Date.now() - started,
+    });
+    return 1;
+  } finally {
+    state.current = undefined;
+  }
+}
+
+/** In a headless run a call that needs asking is denied, and stderr says so. */
+const headlessPrompt: PermissionPrompt = async (request) => {
+  console.error(
+    chalk.yellow(`⚠  ${request.toolName} needs permission and a headless run cannot ask: denied — ${request.description}`),
+  );
+  console.error(chalk.gray('   Allow it with --allow "<rule>" or --allow-all.'));
+  return "deny";
+};
+
+let exitCode = 0;
 
 /**
  * Ctrl+C: the first stops the run in progress (calls already running finish,
@@ -947,15 +1044,25 @@ async function repl(state: ReplState): Promise<void> {
 async function main(): Promise<void> {
   const opts = parseArgs(process.argv.slice(2));
   requireApiKey();
+  const headless = opts.outputFormat !== "text";
+  if (headless) {
+    // stdout is the JSON; anything else the CLI or the loop says goes to stderr.
+    console.log = (...args: unknown[]) => console.error(...args);
+    if (!process.env.AGENT_LOG_LEVEL) logger.setLevel("warn");
+  }
 
   const state = new ReplState(opts);
+  if (headless) state.prompt = headlessPrompt;
   await state.verifyGate();
   const mcp = opts.mcpServers ? await startMcp(opts.mcpServers) : undefined;
 
   try {
     if (opts.prompt !== undefined) {
       process.on("SIGINT", () => interrupt(state));
-      await runOnce(state, opts.prompt);
+      exitCode =
+        opts.outputFormat === "text"
+          ? exitCodeFor(await runOnce(state, opts.prompt))
+          : await runHeadless(state, opts.prompt, opts.outputFormat);
       return;
     }
     await repl(state);
@@ -976,10 +1083,15 @@ async function startMcp(servers: Record<string, McpServerConfig>): Promise<McpCo
   return mcp;
 }
 
+// exitCode, not process.exit(): exiting while the model API's keep-alive
+// socket is still closing trips a libuv assertion on Windows, and the process
+// ends with 0xC0000409 whatever the run's own outcome was.
 main().then(
-  () => process.exit(0),
+  () => {
+    process.exitCode = exitCode;
+  },
   (err: unknown) => {
     console.error(chalk.red(err instanceof Error ? (err.stack ?? err.message) : String(err)));
-    process.exit(1);
+    process.exitCode = 1;
   },
 );
