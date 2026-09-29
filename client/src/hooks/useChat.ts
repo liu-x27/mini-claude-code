@@ -48,7 +48,8 @@ export interface Message {
   content: string;
   thinking?: string;
   toolCalls?: ToolCall[];
-  usage?: { inputTokens: number; outputTokens: number; cost: number };
+  /** `cost` is null when the server has no price for the model. */
+  usage?: { inputTokens: number; outputTokens: number; cost: number | null };
   isStreaming?: boolean;
   /** Where this turn's text began, so a retried turn can drop what its cut-off attempt streamed. */
   turnStart?: number;
@@ -272,7 +273,7 @@ export function useChat(
                   last.usage = {
                     inputTokens: (data["usage"] as { inputTokens: number })?.inputTokens ?? 0,
                     outputTokens: (data["usage"] as { outputTokens: number })?.outputTokens ?? 0,
-                    cost: (data["usage"] as { cost: number })?.cost ?? 0,
+                    cost: (data["usage"] as { cost: number | null } | undefined)?.cost ?? null,
                   };
                   msgs[msgs.length - 1] = last;
                   return { ...s, messages: msgs, isLoading: false };

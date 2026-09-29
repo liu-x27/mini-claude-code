@@ -507,7 +507,8 @@ function forward(event: AgentEvent, send: (event: string, data: unknown) => void
   }
 }
 
-function webUsage(u: { inputTokens: number; outputTokens: number; estimatedCostUsd: number }) {
+/** `cost` is null for a model with no price; the client shows it as unknown. */
+function webUsage(u: { inputTokens: number; outputTokens: number; estimatedCostUsd: number | null }) {
   return { inputTokens: u.inputTokens, outputTokens: u.outputTokens, cost: u.estimatedCostUsd };
 }
 

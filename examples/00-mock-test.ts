@@ -14,6 +14,7 @@ import { FileEditTool } from "../src/tools/file-edit.js";
 import { GlobTool } from "../src/tools/glob.js";
 import { buildRgArgs, GrepTool } from "../src/tools/grep.js";
 import { decodeOutput, resolveShell } from "../src/tools/shell.js";
+import { buildParams } from "../src/model/anthropic.js";
 import { MAX_TOOL_OUTPUT_CHARS } from "../src/utils/truncate.js";
 import { PermissionSystem, PermissionPresets } from "../src/permissions/index.js";
 import {
@@ -34,7 +35,7 @@ import {
   type NoulQuestion,
 } from "xavierjev";
 import { SessionManager } from "../src/session/manager.js";
-import { estimateCost, formatCost } from "../src/utils/cost.js";
+import { addCost, estimateCost, formatCost } from "../src/utils/cost.js";
 import type {
   AgentConfig,
   AgentEvent,
@@ -652,7 +653,7 @@ section("6. Cost Calculator");
 check("claude-opus-5 费用计算", () => {
   const cost = estimateCost("claude-opus-5", 1000, 500);
   const expected = (1000 / 1_000_000) * 5.0 + (500 / 1_000_000) * 25.0;
-  if (Math.abs(cost - expected) > 0.0000001) throw new Error(`期望 ${expected}，得到 ${cost}`);
+  if (cost === null || Math.abs(cost - expected) > 0.0000001) throw new Error(`期望 ${expected}，得到 ${cost}`);
   console.log(chalk.gray(`    1K in + 500 out = ${formatCost(cost)}`));
 });
 
@@ -1544,6 +1545,38 @@ await checkAsync("Glob：按修改时间，新的在前", async () => {
   if (r.type !== "success") throw new Error(r.message);
   const order = r.output.split("\n").slice(1).map((l) => path.basename(l)).join(",");
   if (order !== "b-newest.txt,c-middle.txt,a-oldest.txt") throw new Error(`顺序: ${order}`);
+});
+
+await checkAsync("effort：设了才发 output_config.effort，没设就不发", async () => {
+  const base: ModelRequest = {
+    model: "claude-opus-5-5",
+    system: "s",
+    messages: [{ role: "user", content: "hi" }],
+    tools: [],
+    maxTokens: 100,
+    thinking: { type: "adaptive" },
+    enableCaching: false,
+    stream: false,
+  };
+  if (buildParams({ ...base, effort: "high" }).output_config?.effort !== "high") throw new Error("设了 effort 却没发");
+  if ("output_config" in buildParams(base)) throw new Error("没设 effort 也发了 output_config");
+
+  let sent: ModelRequest["effort"];
+  const client = new ScriptedClient([async (req) => ((sent = req.effort), said("ok"))]);
+  await scriptedAgent(client, { effort: "xhigh" }).agent.run("go");
+  if (sent !== "xhigh") throw new Error(`Agent 发给客户端的 effort: ${sent}`);
+});
+
+await checkAsync("成本：没有价格的模型记为未知，不冒充 Opus 5 的价格", async () => {
+  if (estimateCost("minimax-m2", 1000, 1000) !== null) throw new Error("未知模型应返回 null");
+  const opus55 = estimateCost("claude-opus-5-5", 1_000_000, 1_000_000);
+  if (opus55 === null || Math.abs(opus55 - 24) > 1e-9) throw new Error(`claude-opus-5-5 的 1M+1M: ${opus55}`);
+  if (addCost(1, null) !== null || formatCost(null) !== "cost unknown") throw new Error("未知应一路传下去");
+
+  const used = { inputTokens: 500, outputTokens: 500, cacheCreationTokens: 0, cacheReadTokens: 0 };
+  const client = new ScriptedClient([{ ...said("ok"), usage: used }]);
+  const result = await scriptedAgent(client, { model: "minimax-m2" }).agent.run("go");
+  if (result.usage.estimatedCostUsd !== null) throw new Error(`MiniMax 被算成了 $${result.usage.estimatedCostUsd}`);
 });
 
 await fs.rm(scratch, { recursive: true, force: true });

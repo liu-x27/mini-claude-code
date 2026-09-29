@@ -1,6 +1,6 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import type { Tool } from "../tools/base.js";
-import type { ModelId, ThinkingConfig } from "../types.js";
+import type { EffortLevel, ModelId, ThinkingConfig } from "../types.js";
 
 /**
  * One call to a model, in the shape the agent loop keeps its history in.
@@ -17,6 +17,8 @@ export interface ModelRequest {
   tools: Tool[];
   maxTokens: number;
   thinking: ThinkingConfig;
+  /** Sent only when set; see `AgentConfig.effort`. */
+  effort?: EffortLevel | undefined;
   enableCaching: boolean;
   /** Report deltas as they arrive, rather than only returning the finished message. */
   stream: boolean;

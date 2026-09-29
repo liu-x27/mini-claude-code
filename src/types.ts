@@ -33,7 +33,7 @@ export type ThinkingConfig =
   | { type: "enabled"; budget_tokens: number }
   | { type: "disabled" };
 
-export type EffortLevel = "low" | "medium" | "high" | "max";
+export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max";
 
 // ─────────────────────────────────────────────
 // Tool System
@@ -146,7 +146,8 @@ export interface SessionMetadata {
   turns: number;
   totalInputTokens: number;
   totalOutputTokens: number;
-  totalCost: number;
+  /** Null once any run in the session used a model with no price in `utils/cost.ts`. */
+  totalCost: number | null;
   /**
    * Why the last run ended early, when it did: the API failed, or the caller
    * aborted it. The next run tells the model before its prompt, since a tool
@@ -190,7 +191,11 @@ export interface AgentConfig {
   /** Thinking configuration */
   thinking?: ThinkingConfig;
 
-  /** Effort level for thinking */
+  /**
+   * Sent as `output_config.effort` when set; omitted otherwise, so the model's
+   * own default applies (`medium` on Claude Opus 5.5, `high` on most others).
+   * Not every model or compatible endpoint accepts it: Haiku 4.5 rejects it.
+   */
   effort?: EffortLevel;
 
   /** Names of tools to enable (defaults to all registered tools) */
@@ -266,7 +271,8 @@ export interface AgentUsage {
   outputTokens: number;
   cacheCreationTokens: number;
   cacheReadTokens: number;
-  estimatedCostUsd: number;
+  /** Null when the model has no price in `utils/cost.ts`, rather than someone else's price. */
+  estimatedCostUsd: number | null;
 }
 
 export interface RunOptions {

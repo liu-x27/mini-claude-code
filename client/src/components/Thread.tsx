@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { Message, PendingApproval, ToolCall as ToolCallData } from "../hooks/useChat";
+import { usd } from "../lib/format";
 import { renderMarkdown, withCaret } from "../lib/markdown";
 import { ApprovalCard } from "./ApprovalCard";
 import { Icon, TOOL_ICONS } from "./Icon";
@@ -155,7 +156,7 @@ function Reply({
           <span>
             {msg.usage.inputTokens.toLocaleString()} in · {msg.usage.outputTokens.toLocaleString()} out
           </span>
-          <span>${msg.usage.cost.toFixed(5)}</span>
+          <span>{usd(msg.usage.cost, 5)}</span>
         </footer>
       )}
     </div>

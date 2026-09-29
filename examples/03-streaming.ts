@@ -7,7 +7,7 @@
  * Run: bun run examples/03-streaming.ts
  */
 
-import { Agent } from "../src/index.js";
+import { Agent, formatCost } from "../src/index.js";
 import chalk from "chalk";
 
 const agent = new Agent({
@@ -52,7 +52,7 @@ agent.on(async (event) => {
         chalk.gray(
           `\n\n---\nTokens: ${usage.inputTokens} in / ${usage.outputTokens} out` +
           `  |  Cache: ${usage.cacheReadTokens} read / ${usage.cacheCreationTokens} created` +
-          `  |  Cost: $${usage.estimatedCostUsd.toFixed(5)}\n`
+          `  |  Cost: ${formatCost(usage.estimatedCostUsd)}\n`
         )
       );
       break;

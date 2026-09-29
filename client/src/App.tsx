@@ -105,11 +105,12 @@ export default function App() {
 
   const totals = useMemo(() => {
     let tokens = 0;
-    let cost = 0;
+    let cost: number | null = 0;
     for (const m of state.messages) {
       if (!m.usage) continue;
       tokens += m.usage.inputTokens + m.usage.outputTokens;
-      cost += m.usage.cost;
+      // One unpriced reply makes the total unknown, not smaller.
+      cost = cost === null || m.usage.cost === null ? null : cost + m.usage.cost;
     }
     return { tokens, cost };
   }, [state.messages]);

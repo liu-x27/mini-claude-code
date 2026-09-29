@@ -15,6 +15,7 @@ import type {
   AgentResult,
   AgentUsage,
   ConversationMessage,
+  EffortLevel,
   ModelRouter,
   RetryJudge,
   RunOptions,
@@ -26,7 +27,7 @@ import type {
   ToolResult,
   TracedCall,
 } from "./types.js";
-import { estimateCost } from "./utils/cost.js";
+import { addCost, estimateCost, formatCost } from "./utils/cost.js";
 import { logger } from "./utils/logger.js";
 import { truncateMiddle } from "./utils/truncate.js";
 
@@ -62,12 +63,12 @@ If a task requires multiple steps, plan them out before executing.`;
 export class Agent {
   private client: ModelClient;
   /**
-   * Everything with a default. The judges, `router` and `client` are deliberately not in
-   * here: neither has a sensible sentinel the way "" serves for
-   * resumeSessionId, and Required<> under exactOptionalPropertyTypes cannot
-   * hold an absent value.
+   * Everything with a default. The judges, `router`, `client` and `effort`
+   * are deliberately not in here: none has a sensible sentinel the way ""
+   * serves for resumeSessionId, and Required<> under
+   * exactOptionalPropertyTypes cannot hold an absent value.
    */
-  private config: Required<Omit<AgentConfig, "router" | "client" | "retryJudge" | "stopJudge">>;
+  private config: Required<Omit<AgentConfig, "router" | "client" | "retryJudge" | "stopJudge" | "effort">>;
   private registry: ToolRegistry;
   private permissions: PermissionSystem;
   private sessions: SessionManager;
@@ -75,6 +76,7 @@ export class Agent {
   private router: ModelRouter | undefined;
   private retryJudge: RetryJudge | undefined;
   private stopJudge: StopJudge | undefined;
+  private effort: EffortLevel | undefined;
 
   constructor(config: AgentConfig = {}, registry?: ToolRegistry) {
     this.client = config.client ?? new AnthropicClient();
@@ -86,7 +88,6 @@ export class Agent {
       maxTurns: config.maxTurns ?? DEFAULT_MAX_TURNS,
       maxTokens: config.maxTokens ?? DEFAULT_MAX_TOKENS,
       thinking: config.thinking ?? { type: "adaptive" },
-      effort: config.effort ?? "high",
       allowedTools: config.allowedTools ?? [],
       disallowedTools: config.disallowedTools ?? [],
       permissions: config.permissions ?? {},
@@ -101,6 +102,7 @@ export class Agent {
     this.router = config.router;
     this.retryJudge = config.retryJudge;
     this.stopJudge = config.stopJudge;
+    this.effort = config.effort;
 
     this.registry = registry ?? globalRegistry;
     this.permissions = new PermissionSystem(this.config.permissions);
@@ -290,7 +292,7 @@ export class Agent {
         const u = event.result.usage;
         console.log(
           chalk.gray(
-            `\n\n[${event.result.turns} turn(s), ${u.inputTokens + u.outputTokens} tokens, $${u.estimatedCostUsd.toFixed(5)}]`,
+            `\n\n[${event.result.turns} turn(s), ${u.inputTokens + u.outputTokens} tokens, ${formatCost(u.estimatedCostUsd)}]`,
           ),
         );
       }
@@ -330,6 +332,7 @@ export class Agent {
             tools,
             maxTokens,
             thinking: this.config.thinking,
+            effort: this.effort,
             enableCaching: this.config.enableCaching,
             stream: this.config.stream,
             signal,
@@ -594,7 +597,7 @@ export class Agent {
     accum.outputTokens += outputTokens;
     accum.cacheCreationTokens += cacheCreationTokens;
     accum.cacheReadTokens += cacheReadTokens;
-    accum.estimatedCostUsd += cost;
+    accum.estimatedCostUsd = addCost(accum.estimatedCostUsd, cost);
 
     return { inputTokens, outputTokens, cacheCreationTokens, cacheReadTokens, estimatedCostUsd: cost };
   }
@@ -618,7 +621,7 @@ export class Agent {
       turns: meta.turns + turns,
       totalInputTokens: meta.totalInputTokens + usage.inputTokens,
       totalOutputTokens: meta.totalOutputTokens + usage.outputTokens,
-      totalCost: meta.totalCost + usage.estimatedCostUsd,
+      totalCost: addCost(meta.totalCost, usage.estimatedCostUsd),
       ...(interrupted ? { interrupted } : {}),
     };
     await this.sessions.save({ metadata, messages: withoutDanglingToolUse(messages) });
@@ -721,7 +724,7 @@ function sumUsage(a: AgentUsage, b: AgentUsage): AgentUsage {
     outputTokens: a.outputTokens + b.outputTokens,
     cacheCreationTokens: a.cacheCreationTokens + b.cacheCreationTokens,
     cacheReadTokens: a.cacheReadTokens + b.cacheReadTokens,
-    estimatedCostUsd: a.estimatedCostUsd + b.estimatedCostUsd,
+    estimatedCostUsd: addCost(a.estimatedCostUsd, b.estimatedCostUsd),
   };
 }
 

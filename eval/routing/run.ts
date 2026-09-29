@@ -114,7 +114,11 @@ const downgraded = scored.filter((s) => s.chose === "cheap");
 const wrongDowngrades = wantStrong.filter((s) => s.chose === "cheap");
 const wrongEscalations = wantCheap.filter((s) => s.chose === "strong");
 
-const perRun = (model: ModelId) => estimateCost(model, TOKEN_PROFILE.input, TOKEN_PROFILE.output);
+const perRun = (model: ModelId) => {
+  const cost = estimateCost(model, TOKEN_PROFILE.input, TOKEN_PROFILE.output);
+  if (cost === null) throw new Error(`no price for ${model} in src/utils/cost.ts — the cost row would be made up`);
+  return cost;
+};
 const baseline = scored.length * perRun(strong);
 const routed = scored.reduce((sum, s) => sum + perRun(s.chose === "cheap" ? cheap : strong), 0);
 

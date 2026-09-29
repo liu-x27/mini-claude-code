@@ -8,7 +8,7 @@
  * Run: bun run examples/04-multi-turn.ts
  */
 
-import { Agent, SessionManager } from "../src/index.js";
+import { Agent, SessionManager, formatCost } from "../src/index.js";
 import chalk from "chalk";
 
 // ─────────────────────────────────────────────
@@ -68,7 +68,7 @@ for (const s of sessions.slice(0, 5)) {
   console.log(
     chalk.gray(
       `  [${s.updatedAt.slice(0, 19)}] ${s.sessionId.slice(0, 8)}... ` +
-      `${s.turns} turns | $${s.totalCost.toFixed(5)}`
+      `${s.turns} turns | ${formatCost(s.totalCost)}`
     )
   );
 }

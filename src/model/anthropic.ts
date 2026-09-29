@@ -76,6 +76,9 @@ export function buildParams(request: ModelRequest): Anthropic.MessageCreateParam
       : request.system,
     messages: request.messages,
     thinking: request.thinking as Anthropic.ThinkingConfigParam,
+    // Only when asked for: a default here would override the model's own and
+    // be rejected by the models and compatible endpoints that do not take it.
+    ...(request.effort ? { output_config: { effort: request.effort } } : {}),
     ...(tools.length > 0 && {
       tools,
       tool_choice: { type: "auto" } as Anthropic.ToolChoiceAuto,

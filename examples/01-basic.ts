@@ -7,7 +7,7 @@
  * Run: bun run examples/01-basic.ts
  */
 
-import { Agent } from "../src/index.js";
+import { Agent, formatCost } from "../src/index.js";
 
 const agent = new Agent({
   model: "claude-opus-5",
@@ -26,5 +26,5 @@ console.log("\n=== Stats ===");
 console.log(`Turns: ${result.turns}`);
 console.log(`Input tokens: ${result.usage.inputTokens}`);
 console.log(`Output tokens: ${result.usage.outputTokens}`);
-console.log(`Cost: $${result.usage.estimatedCostUsd.toFixed(5)}`);
+console.log(`Cost: ${formatCost(result.usage.estimatedCostUsd)}`);
 console.log(`Session ID: ${result.sessionId}`);

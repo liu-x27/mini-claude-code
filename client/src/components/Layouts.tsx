@@ -1,4 +1,5 @@
 import type { ReactNode, RefObject, UIEventHandler } from "react";
+import { usd } from "../lib/format";
 import { ALL_MODELS } from "../lib/providers";
 import { nextTheme, THEMES, type Theme } from "../lib/theme";
 import { Icon, type IconName } from "./Icon";
@@ -18,7 +19,7 @@ export interface FrameProps {
   onCycleTheme: () => void;
   model: string;
   onModel: (m: string) => void;
-  totals: { tokens: number; cost: number };
+  totals: { tokens: number; cost: number | null };
   busy: boolean;
   sessionId: string | null;
   judge: string | undefined;
@@ -141,7 +142,7 @@ export function InstrumentFrame(p: FrameProps) {
           </label>
           {p.totals.tokens > 0 && (
             <span className="pill">
-              {p.totals.tokens.toLocaleString()} tok · ${p.totals.cost.toFixed(4)}
+              {p.totals.tokens.toLocaleString()} tok · {usd(p.totals.cost, 4)}
             </span>
           )}
           {p.hasMessages && p.view === "chat" && (
@@ -184,7 +185,7 @@ export function EditorialFrame(p: FrameProps) {
               <dd>{p.sessionId ? p.sessionId.slice(0, 8) : "new"}</dd>
             </div>
             <div>
-              <dd>${p.totals.cost.toFixed(4)}</dd>
+              <dd>{usd(p.totals.cost, 4)}</dd>
             </div>
           </dl>
         </header>
@@ -240,7 +241,7 @@ export function AuroraFrame(p: FrameProps) {
               {p.medianMs !== undefined && ` · ${p.medianMs}ms`}
             </span>
           )}
-          {p.totals.tokens > 0 && <span className="chip">${p.totals.cost.toFixed(4)}</span>}
+          {p.totals.tokens > 0 && <span className="chip">{usd(p.totals.cost, 4)}</span>}
           {p.view === "arena" ? (
             <NavButton p={p} view="chat" icon="chat" label="Transcript" />
           ) : (

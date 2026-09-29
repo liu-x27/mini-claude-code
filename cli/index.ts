@@ -42,12 +42,14 @@ import { SessionManager } from "../src/session/manager.js";
 import { globalRegistry, registerBuiltinTools } from "../src/tools/index.js";
 import type {
   AgentUsage,
+  EffortLevel,
   ModelId,
   ModelRouter,
   PermissionContext,
   PermissionPrompt,
   RiskGate,
 } from "../src/types.js";
+import { addCost } from "../src/utils/cost.js";
 
 registerBuiltinTools();
 
@@ -79,7 +81,6 @@ class LineReader {
     // listener readline closes, and the REPL only noticed once the run in
     // progress had finished: Ctrl+C could not stop an agent mid-run.
     this.rl.on("SIGINT", () => (this.interruptHandler ? this.interruptHandler() : this.close()));
-
 
     this.rl.on("line", (line) => {
       const waiter = this.waiters.shift();
@@ -176,10 +177,14 @@ interface CliOptions {
   gateThreshold: number | undefined;
   /** When set, route between this and `model` instead of always using `model`. */
   cheapModel: ModelId | undefined;
+  /** Sent as output_config.effort when given; otherwise the model's own default applies. */
+  effort: EffortLevel | undefined;
   prompt: string | undefined;
   resume: string | undefined;
   maxTurns: number;
 }
+
+const EFFORT_LEVELS: EffortLevel[] = ["low", "medium", "high", "xhigh", "max"];
 
 function parseArgs(argv: string[]): CliOptions {
   const opts: CliOptions = {
@@ -189,6 +194,7 @@ function parseArgs(argv: string[]): CliOptions {
     gate: "off",
     gateThreshold: undefined,
     cheapModel: undefined,
+    effort: undefined,
     prompt: undefined,
     resume: undefined,
     maxTurns: 20,
@@ -262,6 +268,15 @@ function parseArgs(argv: string[]): CliOptions {
       case "--cheap-model":
         opts.cheapModel = next() as ModelId;
         break;
+      case "--effort": {
+        const value = next();
+        if (!(EFFORT_LEVELS as string[]).includes(value)) {
+          console.error(chalk.red(`--effort must be one of ${EFFORT_LEVELS.join(", ")}, got ${value}`));
+          process.exit(1);
+        }
+        opts.effort = value as EffortLevel;
+        break;
+      }
       case "-h":
       case "--help":
         printUsage();
@@ -345,6 +360,8 @@ ${chalk.bold("Options")}
                          - measure with npm run eval:risk-gate before changing
       --cheap-model <id> Route each prompt between this and --model, using the
                          same judge. Needs --gate to supply one.
+      --effort <level>   low | medium | high | xhigh | max, sent as
+                         output_config.effort (default: the model's own)
   -h, --help             Show this help
 
 ${chalk.bold("Slash commands (REPL)")}
@@ -422,8 +439,13 @@ function formatUsage(usage: AgentUsage): string {
   return chalk.gray(
     `[${total} tokens · in ${usage.inputTokens} / out ${usage.outputTokens}` +
       ` · cache ${usage.cacheReadTokens} read` +
-      ` · $${usage.estimatedCostUsd.toFixed(5)}]`,
+      ` · ${usd(usage.estimatedCostUsd)}]`,
   );
+}
+
+/** Null is a model with no price in src/utils/cost.ts. */
+function usd(cost: number | null): string {
+  return cost === null ? "cost unknown" : `$${cost.toFixed(5)}`;
 }
 
 /**
@@ -458,6 +480,7 @@ class ReplState {
   gateBackend: GateBackend;
   gateThreshold: number | undefined;
   maxTurns: number;
+  effort: EffortLevel | undefined;
   sessionId: string | undefined;
   /** The run in progress, so Ctrl+C can stop it. */
   current: AbortController | undefined;
@@ -473,7 +496,7 @@ class ReplState {
   turns = 0;
   totalInputTokens = 0;
   totalOutputTokens = 0;
-  totalCostUsd = 0;
+  totalCostUsd: number | null = 0;
 
   constructor(opts: CliOptions) {
     this.model = opts.model;
@@ -482,6 +505,7 @@ class ReplState {
     this.gateBackend = opts.gate;
     this.gateThreshold = opts.gateThreshold;
     this.maxTurns = opts.maxTurns;
+    this.effort = opts.effort;
     this.sessionId = opts.resume;
     this.current = undefined;
     this.prompt = undefined;
@@ -555,6 +579,7 @@ class ReplState {
       model: this.model,
       cwd: this.cwd,
       maxTurns: this.maxTurns,
+      ...(this.effort ? { effort: this.effort } : {}),
       permissions: {
         ...resolvePreset(this.preset),
         ...(this.prompt ? { prompt: this.prompt } : {}),
@@ -578,7 +603,7 @@ class ReplState {
     this.turns++;
     this.totalInputTokens += usage.inputTokens;
     this.totalOutputTokens += usage.outputTokens;
-    this.totalCostUsd += usage.estimatedCostUsd;
+    this.totalCostUsd = addCost(this.totalCostUsd, usage.estimatedCostUsd);
     this.sessionId = sessionId;
   }
 }
@@ -638,7 +663,7 @@ async function handleCommand(input: string, state: ReplState): Promise<boolean> 
         console.log(
           chalk.gray(`  ${s.updatedAt.slice(0, 19)}  `) +
             chalk.cyan(s.sessionId.slice(0, 8)) +
-            chalk.gray(`  ${s.turns} turns  $${s.totalCost.toFixed(5)}`) +
+            chalk.gray(`  ${s.turns} turns  ${usd(s.totalCost)}`) +
             (s.interrupted ? chalk.yellow("  (ended early)") : ""),
         );
       }
