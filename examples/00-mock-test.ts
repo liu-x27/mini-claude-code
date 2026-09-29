@@ -41,6 +41,7 @@ import type {
   AgentConfig,
   AgentEvent,
   PermissionDecision,
+  RiskGate,
   ToolContext,
   ToolResult,
 } from "../src/types.js";
@@ -1852,6 +1853,25 @@ await checkAsync("权限规则：Read(~/.ssh/**) 也拦 Grep/Glob；Edit(src/**)
   await expect("docs.python.org", check("WebFetch", { url: "https://docs.python.org/3/" }), true, false);
   await expect("sub.docs.python.org", check("WebFetch", { url: "https://sub.docs.python.org/x" }), true, false);
   await expect("other host", check("WebFetch", { url: "https://example.com/?q=1" }), false, true);
+});
+
+await checkAsync("闸门只替 Bash 作答：Write/Edit/WebFetch 从没在它身上测过，照样问用户", async () => {
+  let judged = 0;
+  let asked = 0;
+  const clearsEverything: RiskGate = async () => (judged++, { action: "allow", probability: 0.01, reason: "looks fine" });
+  const perm = new PermissionSystem({
+    ...PermissionPresets.askDangerous(),
+    gate: clearsEverything,
+    prompt: async () => (asked++, "deny"),
+  });
+  const bash = await perm.check({ toolName: "Bash", input: { command: "ls" }, description: "ls" });
+  const write = await perm.check({ toolName: "Write", input: { file_path: "a", content: "" }, description: "a" });
+  const fetch = await perm.check({ toolName: "WebFetch", input: { url: "https://example.com" }, description: "u" });
+  if (!bash || write || fetch || judged !== 1 || asked !== 2) {
+    throw new Error(`Bash ${bash} / Write ${write} / WebFetch ${fetch}；闸门判了 ${judged} 次，问了 ${asked} 次`);
+  }
+  const wider = new PermissionSystem({ ...PermissionPresets.askDangerous(), gate: clearsEverything, gateTools: ["Bash", "Write"] });
+  if (!(await wider.check({ toolName: "Write", input: { file_path: "a", content: "" }, description: "a" }))) throw new Error("gateTools 没生效");
 });
 
 check("parseRule：读 Claude Code 的规则写法，写错就报错", () => {

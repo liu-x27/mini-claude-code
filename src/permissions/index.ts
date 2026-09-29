@@ -22,6 +22,7 @@ export class PermissionSystem {
   private prompt: PermissionPrompt;
   private gate: RiskGate | undefined;
   private onAsk: PermissionContext["onAsk"];
+  private gateTools: Set<string>;
   /** Tail of the queue of questions to the user — see promptUser(). */
   private promptQueue: Promise<unknown> = Promise.resolve();
 
@@ -36,6 +37,7 @@ export class PermissionSystem {
     this.prompt = context?.prompt ?? stdinPrompt;
     this.gate = context?.gate;
     this.onAsk = context?.onAsk;
+    this.gateTools = new Set(context?.gateTools ?? ["Bash"]);
   }
 
   /**
@@ -78,7 +80,11 @@ export class PermissionSystem {
       if (answer === "deny") return false;
     }
 
-    if (this.gate) {
+    // Only where it was measured. Write, Edit and WebFetch used to reach it
+    // too, and a threshold chosen on shell commands was clearing file writes
+    // and fetches no number stands behind; XavierJev's own Claude Code
+    // integration refuses anything but Bash for the same reason.
+    if (this.gate && this.gateTools.has(request.toolName)) {
       const verdict = await this.gate(request);
 
       switch (verdict.action) {

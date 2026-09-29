@@ -123,6 +123,12 @@ export interface PermissionContext {
    * the PermissionRequest hook. Undefined means it has no answer.
    */
   onAsk?: (request: PermissionRequest) => Promise<"allow" | "deny" | undefined>;
+  /**
+   * The tools the gate may answer for. Default: Bash, the one tool its
+   * questions and threshold were measured on; any other call it is asked
+   * about goes to the user. Widen it only with numbers for the new tool.
+   */
+  gateTools?: string[];
 }
 
 export type PermissionDecision = "allow" | "deny" | "always-allow" | "always-deny";

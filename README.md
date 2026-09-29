@@ -290,8 +290,9 @@ the judge busy.
 
 Two constraints shape everything else.
 
-**What the gate can and cannot do.** When enabled, it can auto-approve calls the static
-rules classified as `ask`. It cannot touch a static `deny`, and is never consulted for
+**What the gate can and cannot do.** When enabled, it can auto-approve Bash calls the
+static rules classified as `ask` — Bash only, the one tool its questions and threshold were
+measured on (`gateTools` widens it); it used to answer for Write, Edit and WebFetch too. It cannot touch a static `deny`, and is never consulted for
 one. So it moves calls out of your prompt queue, not out of your deny list — and a model
 is never in a position to overrule a rule you wrote.
 A gate that could widen what runs would put a model in the position of overruling the
