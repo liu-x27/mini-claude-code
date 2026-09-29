@@ -39,13 +39,18 @@ export class GlobTool extends Tool<GlobInput> {
 
     let matches: string[];
     try {
-      const raw = await glob(input.pattern, {
+      const found = await glob(input.pattern, {
         cwd: searchDir,
-        absolute: true,
         nodir: true,
+        withFileTypes: true,
+        stat: true,
         ignore: ["**/node_modules/**", "**/.git/**", "**/dist/**", "**/build/**"],
       });
-      matches = raw as string[];
+      // Newest first, as the description promises; it used to be whatever
+      // order the walk produced.
+      matches = found
+        .sort((a, b) => (b.mtimeMs ?? 0) - (a.mtimeMs ?? 0))
+        .map((p) => p.fullpath());
     } catch (err) {
       return { type: "error", message: `Glob error: ${String(err)}` };
     }
@@ -54,8 +59,6 @@ export class GlobTool extends Tool<GlobInput> {
       return { type: "success", output: "No files matched the pattern." };
     }
 
-    // Sort by modification time (newer first) using withFileTypes
-    // For simplicity we'll use the paths and stat separately
     const output = matches.slice(0, 500).join("\n");
     const footer = matches.length > 500 ? `\n[... and ${matches.length - 500} more]` : "";
 

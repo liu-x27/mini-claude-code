@@ -55,7 +55,7 @@ export class FileEditTool extends Tool<FileEditInput> {
       return { type: "error", message: `File not found: ${absPath}` };
     }
 
-    const count = content.split(input.old_string).length - 1;
+    const { oldString, newString, count } = matchLineEndings(content, input.old_string, input.new_string);
 
     if (count === 0) {
       return {
@@ -72,9 +72,13 @@ export class FileEditTool extends Tool<FileEditInput> {
       };
     }
 
+    // Never String.replace with a string: it reads `$&`, `$$` and `$'` in the
+    // replacement as patterns, so a new_string holding shell or regex code
+    // was written back changed, with the edit reported as a success.
+    const at = content.indexOf(oldString);
     const updated = input.replace_all
-      ? content.split(input.old_string).join(input.new_string)
-      : content.replace(input.old_string, input.new_string);
+      ? content.split(oldString).join(newString)
+      : content.slice(0, at) + newString + content.slice(at + oldString.length);
 
     try {
       await fs.writeFile(absPath, updated, "utf-8");
@@ -91,4 +95,27 @@ export class FileEditTool extends Tool<FileEditInput> {
   override summarize(input: FileEditInput): string {
     return `${input.file_path}: "${input.old_string.slice(0, 30)}"`;
   }
+}
+
+function occurrences(content: string, needle: string): number {
+  return needle === "" ? 0 : content.split(needle).length - 1;
+}
+
+/**
+ * Match the file's line endings when the model's strings do not.
+ *
+ * Read shows lines without their `\r`, so on a CRLF file the model writes
+ * `old_string` with plain `\n` and an exact match can never succeed. When the
+ * strings as given match nothing, and converting them to the file's line
+ * ending does, the converted pair is used, so new lines keep the file's style.
+ */
+function matchLineEndings(content: string, oldString: string, newString: string) {
+  const asGiven = occurrences(content, oldString);
+  if (asGiven > 0 || !oldString.includes("\n")) return { oldString, newString, count: asGiven };
+
+  const crlf = content.includes("\r\n");
+  const toFile = (s: string) => (crlf ? s.replace(/\r?\n/g, "\r\n") : s.replace(/\r\n/g, "\n"));
+  const converted = { oldString: toFile(oldString), newString: toFile(newString) };
+  const count = occurrences(content, converted.oldString);
+  return count > 0 ? { ...converted, count } : { oldString, newString, count: asGiven };
 }

@@ -1261,6 +1261,43 @@ await checkAsync("Grep：注入载荷不被执行（有 rg 走 rg，没有走 JS
   if (await exists(path.join(dir, "pwned.txt"))) throw new Error("注入的命令被执行了");
 });
 
+await checkAsync("Edit：CRLF 文件用 LF 写 old_string 也能改，改完仍是 CRLF", async () => {
+  const file = path.join(scratch, "win.ts");
+  await fs.writeFile(file, "const a = 1;\r\nconst b = 2;\r\n");
+  const r = await new FileEditTool().execute(
+    { file_path: file, old_string: "const a = 1;\nconst b = 2;", new_string: "const a = 1;\nconst b = 3;" },
+    ctx,
+  );
+  if (r.type !== "success") throw new Error(r.message);
+  const text = await fs.readFile(file, "utf-8");
+  if (text !== "const a = 1;\r\nconst b = 3;\r\n") throw new Error(`改后: ${JSON.stringify(text)}`);
+});
+
+await checkAsync("Edit：new_string 里的 $$、$&、$' 原样写入", async () => {
+  const file = path.join(scratch, "dollar.sh");
+  await fs.writeFile(file, "PID=OLD\n");
+  const newString = "PID=$$ # $& $' $1";
+  const r = await new FileEditTool().execute({ file_path: file, old_string: "PID=OLD", new_string: newString }, ctx);
+  if (r.type !== "success") throw new Error(r.message);
+  const text = await fs.readFile(file, "utf-8");
+  if (text !== `${newString}\n`) throw new Error(`写成了: ${JSON.stringify(text)}（String.replace 会把 $$ 变成 $）`);
+});
+
+await checkAsync("Glob：按修改时间，新的在前", async () => {
+  const dir = path.join(scratch, "glob");
+  await fs.mkdir(dir);
+  for (const [name, ageSec] of [["b-newest.txt", 0], ["a-oldest.txt", 3600], ["c-middle.txt", 1800]] as const) {
+    const file = path.join(dir, name);
+    await fs.writeFile(file, name);
+    const t = new Date(Date.now() - ageSec * 1000);
+    await fs.utimes(file, t, t);
+  }
+  const r = await new GlobTool().execute({ pattern: "*.txt" }, { ...ctx, cwd: dir });
+  if (r.type !== "success") throw new Error(r.message);
+  const order = r.output.split("\n").slice(1).map((l) => path.basename(l)).join(",");
+  if (order !== "b-newest.txt,c-middle.txt,a-oldest.txt") throw new Error(`顺序: ${order}`);
+});
+
 await fs.rm(scratch, { recursive: true, force: true });
 
 // ─────────────────────────────────────────────
