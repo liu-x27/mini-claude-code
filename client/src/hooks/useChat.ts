@@ -50,6 +50,9 @@ export interface Message {
   toolCalls?: ToolCall[];
   usage?: { inputTokens: number; outputTokens: number; cost: number };
   isStreaming?: boolean;
+  /** Where this turn's text began, so a retried turn can drop what its cut-off attempt streamed. */
+  turnStart?: number;
+  thinkingStart?: number;
   error?: string;
 }
 
@@ -161,6 +164,18 @@ export function useChat(
 
                 case "thinking_delta":
                   last.thinking = (last.thinking ?? "") + (data["delta"] as string);
+                  break;
+
+                case "turn_start":
+                  last.turnStart = last.content.length;
+                  last.thinkingStart = (last.thinking ?? "").length;
+                  break;
+
+                case "turn_retry":
+                  // The reply was cut off mid tool call and is being asked
+                  // again; what it streamed is superseded by the retry.
+                  last.content = last.content.slice(0, last.turnStart ?? 0);
+                  if (last.thinking !== undefined) last.thinking = last.thinking.slice(0, last.thinkingStart ?? 0);
                   break;
 
                 case "tool_start": {

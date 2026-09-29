@@ -1244,6 +1244,63 @@ section("14. Harness regressions");
 const scratch = await fs.mkdtemp(path.join(os.tmpdir(), "agent_regress_"));
 const exists = (p: string) => fs.access(p).then(() => true, () => false);
 
+/** 记录每次执行起止时间的工具；dangerous 决定它能不能和别的调用并行 */
+class NapTool extends Tool {
+  readonly description = "Sleep a moment";
+  readonly inputSchema = { type: "object" as const, properties: { tag: { type: "string" as const } } };
+  override readonly dangerous: boolean;
+  constructor(
+    readonly name: string,
+    dangerous: boolean,
+    private log: Array<{ tag: string; start: number; end: number }>,
+  ) {
+    super();
+    this.dangerous = dangerous;
+  }
+  override async execute(input: Record<string, unknown>): Promise<ToolResult> {
+    const start = performance.now();
+    await new Promise((r) => setTimeout(r, 60));
+    this.log.push({ tag: String(input["tag"]), start, end: performance.now() });
+    return { type: "success", output: "slept" };
+  }
+}
+
+/** 有必填字段和数字字段的工具，记下真正执行时拿到的输入 */
+class CountTool extends Tool {
+  readonly name = "Count";
+  readonly description = "Count things";
+  readonly inputSchema = {
+    type: "object" as const,
+    properties: { text: { type: "string" as const }, count: { type: "number" as const } },
+    required: ["text"],
+  };
+  readonly seen: Record<string, unknown>[] = [];
+  override async execute(input: Record<string, unknown>): Promise<ToolResult> {
+    this.seen.push(input);
+    return { type: "success", output: "counted" };
+  }
+}
+
+const cutOff = (id: string, extra: Anthropic.ContentBlockParam[] = []): ModelResponse => ({
+  content: [...extra, { type: "tool_use", id, name: "Echo", input: { text: "half a" } }],
+  stopReason: "max_tokens",
+  usage: noUsage,
+});
+
+/** 会话里有没有哪条 tool_use 后面没有紧跟 tool_result——有的话每次续跑都会被 API 拒绝 */
+function danglingToolUse(messages: ModelRequest["messages"]): boolean {
+  return messages.some((m, i) => {
+    if (m.role !== "assistant" || typeof m.content === "string") return false;
+    const ids = m.content.filter((b) => b.type === "tool_use").map((b) => (b as Anthropic.ToolUseBlockParam).id);
+    if (ids.length === 0) return false;
+    const next = messages[i + 1];
+    const answered = next && typeof next.content !== "string"
+      ? next.content.filter((b) => b.type === "tool_result").map((b) => (b as Anthropic.ToolResultBlockParam).tool_use_id)
+      : [];
+    return ids.some((id) => !answered.includes(id));
+  });
+}
+
 check("Grep：pattern 和 glob 各是 rg 的一个参数，不经过 shell", () => {
   const glob = '*" & echo pwned> pwned.txt & rem "';
   const pattern = "$(echo pwned > pwned.txt)";
@@ -1261,6 +1318,159 @@ await checkAsync("Grep：注入载荷不被执行（有 rg 走 rg，没有走 JS
   await tool.execute({ pattern: "hello", glob: '*" & echo pwned> pwned.txt & rem "' }, { ...ctx, cwd: dir });
   await tool.execute({ pattern: "$(echo pwned > pwned.txt)" }, { ...ctx, cwd: dir });
   if (await exists(path.join(dir, "pwned.txt"))) throw new Error("注入的命令被执行了");
+});
+
+await checkAsync("工具输入先校验：类型不对的调用不执行，数字字符串照常接受", async () => {
+  const count = new CountTool();
+  const registry = new ToolRegistry().register(count);
+  const client = new ScriptedClient([
+    calls(["v1", "Count", { text: 5 }], ["v2", "Count", { count: "3" }], ["v3", "Count", { text: "ok", count: "3" }]),
+    said("done"),
+  ]);
+  const agent = new Agent({ client, persistSessions: false, permissions: PermissionPresets.allowAll() }, registry);
+  await agent.run("go");
+  const [bad, missing, good] = toolResultsIn(client.seen[1]!);
+  if (!bad?.is_error || !String(bad.content).includes('"text" must be a string')) throw new Error(`v1: ${JSON.stringify(bad)}`);
+  if (!missing?.is_error || !String(missing.content).includes("missing required")) throw new Error(`v2: ${JSON.stringify(missing)}`);
+  if (good?.is_error) throw new Error(`v3 不该报错: ${JSON.stringify(good)}`);
+  if (count.seen.length !== 1 || count.seen[0]?.["count"] !== 3) throw new Error(`实际执行: ${JSON.stringify(count.seen)}`);
+});
+
+await checkAsync("调度：只读的调用并行；危险的调用等前面的做完，独自执行，按顺序", async () => {
+  const log: Array<{ tag: string; start: number; end: number }> = [];
+  const registry = new ToolRegistry().register(new NapTool("Look", false, log), new NapTool("Change", true, log));
+  const client = new ScriptedClient([
+    calls(["a", "Look", { tag: "a" }], ["b", "Look", { tag: "b" }], ["c", "Change", { tag: "c" }], ["d", "Look", { tag: "d" }]),
+    said("done"),
+  ]);
+  const agent = new Agent({ client, persistSessions: false, permissions: PermissionPresets.allowAll() }, registry);
+  await agent.run("go");
+  const at = (tag: string) => log.find((e) => e.tag === tag)!;
+  const [a, b, c, d] = ["a", "b", "c", "d"].map(at) as [typeof log[0], typeof log[0], typeof log[0], typeof log[0]];
+  if (!(a.start < b.end && b.start < a.end)) throw new Error("a 和 b 应该同时跑");
+  if (c.start < Math.max(a.end, b.end)) throw new Error("c 在 a、b 做完之前就开始了");
+  if (d.start < c.end) throw new Error("d 在 c 做完之前就开始了");
+  const order = toolResultsIn(client.seen[1]!).map((r) => r.tool_use_id).join("");
+  if (order !== "abcd") throw new Error(`结果顺序: ${order}`);
+});
+
+await checkAsync("同一回合两个 Edit 改同一个文件：两处都在（256 KB 文件，重复 20 次）", async () => {
+  // 修之前：1 MB 文件 100 回合里 92–98 回合丢一处改动，两次调用都报成功
+  for (let t = 0; t < 20; t++) {
+    const file = path.join(scratch, `race-${t}.ts`);
+    await fs.writeFile(file, `export const A = 1;\nexport const B = 1;\n${"// filler line for size\n".repeat(11_000)}`);
+    const client = new ScriptedClient([
+      calls(
+        ["ea", "Edit", { file_path: file, old_string: "A = 1", new_string: "A = 2" }],
+        ["eb", "Edit", { file_path: file, old_string: "B = 1", new_string: "B = 2" }],
+      ),
+      said("done"),
+    ]);
+    const agent = new Agent({ client, persistSessions: false, permissions: PermissionPresets.allowAll() });
+    await agent.run("bump both");
+    const text = await fs.readFile(file, "utf-8");
+    if (!text.includes("A = 2") || !text.includes("B = 2")) throw new Error(`第 ${t + 1} 次丢了一处改动`);
+  }
+});
+
+await checkAsync("max_tokens 截在工具调用中间：调大 max_tokens 重问，截断的那次不执行、不入库", async () => {
+  const dir = path.join(scratch, "maxtok");
+  const asked: number[] = [];
+  const client = new ScriptedClient([
+    async (req) => (asked.push(req.maxTokens), cutOff("cut")),
+    async (req) => (asked.push(req.maxTokens), calls(["t1", "Echo", { text: "whole" }])),
+    said("done"),
+  ]);
+  const { agent, events } = scriptedAgent(client, { persistSessions: true, sessionDir: dir, maxTokens: 16_000 });
+  const result = await agent.run("go");
+  if (asked.join(",") !== "16000,32000") throw new Error(`max_tokens 依次是 ${asked.join(",")}`);
+  if (result.text !== "done" || !events.some((e) => e.type === "turn_retry")) throw new Error(`结果: ${result.text}`);
+  const saved = await new SessionManager(dir).load(result.sessionId);
+  if (JSON.stringify(saved?.messages).includes('"cut"')) throw new Error("截断的回复进了会话");
+  if (danglingToolUse(saved!.messages)) throw new Error("会话里有没配上结果的 tool_use");
+});
+
+await checkAsync("一直被截断：到上限为止，什么都不执行，会话仍然续得上", async () => {
+  const dir = path.join(scratch, "maxtok-stuck");
+  const client = new ScriptedClient([cutOff("c1"), cutOff("c2"), cutOff("c3")]);
+  const { agent, events } = scriptedAgent(client, { persistSessions: true, sessionDir: dir, maxTokens: 16_000 });
+  const result = await agent.run("write the big file");
+  if (result.stopReason !== "max_tokens" || !result.text.includes("nothing was run")) {
+    throw new Error(`结果: ${result.stopReason} / ${result.text}`);
+  }
+  if (client.seen.length !== 3 || events.some((e) => e.type === "tool_start")) throw new Error("截断的调用被执行了，或重试次数不对");
+  const saved = await new SessionManager(dir).load(result.sessionId);
+  if (!saved || danglingToolUse(saved.messages)) throw new Error("会话里留下了没有结果的 tool_use，之后每次续跑都会 400");
+});
+
+await checkAsync("refusal 打断了工具调用：不执行、不入库，并说明原因", async () => {
+  const client = new ScriptedClient([
+    { ...cutOff("r1", [{ type: "text", text: "Let me" }]), stopReason: "refusal" },
+  ]);
+  const { agent, events } = scriptedAgent(client);
+  const result = await agent.run("go");
+  if (result.stopReason !== "refusal" || !result.text.includes("declined")) throw new Error(`结果: ${result.text}`);
+  if (events.some((e) => e.type === "tool_start")) throw new Error("被拒那一轮的工具执行了");
+});
+
+await checkAsync("第 2 轮模型调用失败：第 1 轮已存盘；下一次运行先告诉模型上次中断了", async () => {
+  const dir = path.join(scratch, "crash");
+  const client = new ScriptedClient([
+    calls(["t1", "Echo", { text: "did it" }]),
+    async () => {
+      throw new Error("529 overloaded_error");
+    },
+  ]);
+  const { agent } = scriptedAgent(client, { persistSessions: true, sessionDir: dir });
+  let sessionId = "";
+  agent.on((e) => {
+    if (e.type === "session") sessionId = e.sessionId;
+  });
+  const err = await agent.run("go").then(() => "", (e: Error) => e.message);
+  if (!err.includes("529")) throw new Error(`应该把错误抛出来: ${err}`);
+
+  const sessions = new SessionManager(dir);
+  const saved = await sessions.load(sessionId);
+  const roles = saved?.messages.map((m) => m.role).join(",");
+  if (roles !== "user,assistant,user") throw new Error(`存下的对话: ${roles}（修之前一条都不存）`);
+  if (!saved?.metadata.interrupted?.includes("529")) throw new Error(`中断原因: ${saved?.metadata.interrupted}`);
+
+  const next = new ScriptedClient([said("ok")]);
+  await scriptedAgent(next, { persistSessions: true, sessionDir: dir, resumeSessionId: sessionId }).agent.run("continue");
+  const turn = next.seen[0]!.at(-1)!;
+  const blocks = typeof turn.content === "string" ? [] : turn.content;
+  const note = blocks[0]?.type === "text" ? blocks[0].text : "";
+  if (!note.includes("ended early") || !note.includes("529")) throw new Error(`续跑时的提示: ${JSON.stringify(turn.content)}`);
+  if (blocks[1]?.type !== "text" || blocks[1].text !== "continue") throw new Error("用户的话应该原样跟在提示后面");
+  if ((await sessions.load(sessionId))?.metadata.interrupted) throw new Error("续跑成功后中断标记应该清掉");
+});
+
+await checkAsync("工具执行期间进程若死掉：盘上的会话可续，并记着哪些调用在跑", async () => {
+  const dir = path.join(scratch, "inflight");
+  let onDisk: Awaited<ReturnType<SessionManager["load"]>> = null;
+  class PeekTool extends Tool {
+    readonly name = "Peek";
+    readonly description = "Look at the saved session mid-call";
+    readonly inputSchema = { type: "object" as const, properties: {} };
+    sessionId = "";
+    override async execute(): Promise<ToolResult> {
+      onDisk = await new SessionManager(dir).load(this.sessionId);
+      return { type: "success", output: "peeked" };
+    }
+  }
+  const peek = new PeekTool();
+  const client = new ScriptedClient([calls(["p1", "Peek", {}]), said("done")]);
+  const agent = new Agent(
+    { client, persistSessions: true, sessionDir: dir, permissions: PermissionPresets.allowAll() },
+    new ToolRegistry().register(peek),
+  );
+  agent.on((e) => {
+    if (e.type === "session") peek.sessionId = e.sessionId;
+  });
+  await agent.run("go");
+  const mid = onDisk as Awaited<ReturnType<SessionManager["load"]>>;
+  if (!mid?.metadata.interrupted?.includes("Peek")) throw new Error(`执行期间的标记: ${mid?.metadata.interrupted}`);
+  if (danglingToolUse(mid.messages)) throw new Error("执行期间盘上的会话不可续");
 });
 
 await checkAsync("Bash 输出有上限：300 万字符只交回头尾，结尾还在", async () => {

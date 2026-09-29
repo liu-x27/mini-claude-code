@@ -70,9 +70,16 @@ class LineReader {
   private queue: string[] = [];
   private waiters: ((line: string | null) => void)[] = [];
   private closed = false;
+  private interruptHandler: (() => void) | undefined;
 
   constructor() {
     this.rl = readline.createInterface({ input: stdin, output: stdout });
+
+    // At a TTY, Ctrl+C reaches readline rather than the process. With no
+    // listener readline closes, and the REPL only noticed once the run in
+    // progress had finished: Ctrl+C could not stop an agent mid-run.
+    this.rl.on("SIGINT", () => (this.interruptHandler ? this.interruptHandler() : this.close()));
+
 
     this.rl.on("line", (line) => {
       const waiter = this.waiters.shift();
@@ -90,8 +97,17 @@ class LineReader {
     });
   }
 
-  /** Resolves to the next line, or null once stdin is exhausted. */
-  async question(prompt: string): Promise<string | null> {
+  /** Called on Ctrl+C instead of closing. */
+  onInterrupt(handler: () => void): void {
+    this.interruptHandler = handler;
+  }
+
+  /**
+   * Resolves to the next line, or null once stdin is exhausted — or once
+   * `signal` aborts, so a permission question does not outlive its run and
+   * swallow the next prompt the user types.
+   */
+  async question(prompt: string, signal?: AbortSignal): Promise<string | null> {
     stdout.write(prompt);
 
     const queued = this.queue.shift();
@@ -99,11 +115,23 @@ class LineReader {
       this.echo(queued);
       return queued;
     }
-    if (this.closed) {
+    if (this.closed || signal?.aborted) {
       stdout.write("\n");
       return null;
     }
-    return new Promise((resolve) => this.waiters.push(resolve));
+    return new Promise((resolve) => {
+      const onAbort = () => {
+        this.waiters = this.waiters.filter((w) => w !== waiter);
+        stdout.write("\n");
+        resolve(null);
+      };
+      const waiter = (line: string | null) => {
+        signal?.removeEventListener("abort", onAbort);
+        resolve(line);
+      };
+      signal?.addEventListener("abort", onAbort, { once: true });
+      this.waiters.push(waiter);
+    });
   }
 
   /** A TTY echoes what the user types; a pipe does not, so do it by hand. */
@@ -402,7 +430,7 @@ function formatUsage(usage: AgentUsage): string {
  * A permission prompt that reads through the REPL's LineReader instead of
  * opening a second reader on stdin — see note 1 in the file header.
  */
-function replPrompt(reader: LineReader): PermissionPrompt {
+function replPrompt(reader: LineReader, runSignal: () => AbortSignal | undefined): PermissionPrompt {
   return async (request) => {
     console.log(
       chalk.yellow("\n⚠  Permission required") +
@@ -413,6 +441,7 @@ function replPrompt(reader: LineReader): PermissionPrompt {
     }
     const answer = await reader.question(
       chalk.yellow("   Allow? [y/N/a (always)/d (deny always)]: "),
+      runSignal(),
     );
     return parseDecision(answer ?? "");
   };
@@ -430,6 +459,8 @@ class ReplState {
   gateThreshold: number | undefined;
   maxTurns: number;
   sessionId: string | undefined;
+  /** The run in progress, so Ctrl+C can stop it. */
+  current: AbortController | undefined;
   /** Left undefined in one-shot mode, where the default stdin prompt is fine. */
   prompt: PermissionPrompt | undefined;
   /** Undefined when the gate is off; rebuilt only when the backend changes. */
@@ -452,6 +483,7 @@ class ReplState {
     this.gateThreshold = opts.gateThreshold;
     this.maxTurns = opts.maxTurns;
     this.sessionId = opts.resume;
+    this.current = undefined;
     this.prompt = undefined;
     const resolved = resolveGate(opts.gate, opts.gateThreshold);
     this.gate = resolved.gate;
@@ -534,6 +566,11 @@ class ReplState {
       ...(this.sessionId ? { resumeSessionId: this.sessionId } : {}),
     });
     attachRenderer(agent);
+    // Known as soon as the run starts: a run that throws has still saved its
+    // session, and the next prompt should continue that one.
+    agent.on((event) => {
+      if (event.type === "session") this.sessionId = event.sessionId;
+    });
     return agent;
   }
 
@@ -601,7 +638,8 @@ async function handleCommand(input: string, state: ReplState): Promise<boolean> 
         console.log(
           chalk.gray(`  ${s.updatedAt.slice(0, 19)}  `) +
             chalk.cyan(s.sessionId.slice(0, 8)) +
-            chalk.gray(`  ${s.turns} turns  $${s.totalCost.toFixed(5)}`),
+            chalk.gray(`  ${s.turns} turns  $${s.totalCost.toFixed(5)}`) +
+            (s.interrupted ? chalk.yellow("  (ended early)") : ""),
         );
       }
       return true;
@@ -693,17 +731,51 @@ function requireApiKey(): void {
   }
 }
 
+/** Stop reasons whose text was never streamed, so the user would not otherwise see why the run ended. */
+const EXPLAINED_STOPS = new Set(["stuck", "max_tokens", "refusal", "model_context_window_exceeded"]);
+
 async function runOnce(state: ReplState, prompt: string): Promise<void> {
   const agent = state.buildAgent();
-  const result = await agent.run(prompt);
-  state.record(result.usage, result.sessionId);
-  stdout.write("\n");
-  console.log(formatUsage(result.usage));
+  const controller = new AbortController();
+  state.current = controller;
+  try {
+    const result = await agent.run(prompt, { signal: controller.signal });
+    state.record(result.usage, result.sessionId);
+    stdout.write("\n");
+    if (result.stopReason === "aborted") {
+      console.log(chalk.yellow("⏹  Stopped. The session is saved; the next prompt continues it."));
+    } else if (result.stopReason === "max_turns") {
+      console.log(chalk.yellow(`⏹  Stopped at the turn limit (${state.maxTurns}).`));
+    } else if (EXPLAINED_STOPS.has(result.stopReason) && result.text) {
+      console.log(chalk.yellow(`⏹  ${result.text}`));
+    }
+    console.log(formatUsage(result.usage));
+  } finally {
+    state.current = undefined;
+  }
+}
+
+/**
+ * Ctrl+C: the first stops the run in progress (calls already running finish,
+ * and the session is saved), a second quits. With no run, it quits.
+ */
+function interrupt(state: ReplState, reader?: LineReader): void {
+  const run = state.current;
+  if (run && !run.signal.aborted) {
+    run.abort();
+    console.log(chalk.yellow("\n⏹  Stopping — calls already running will finish. Ctrl+C again to quit now."));
+    return;
+  }
+  if (run || !reader) process.exit(130);
+  reader.close();
 }
 
 async function repl(state: ReplState): Promise<void> {
   const reader = new LineReader();
-  state.prompt = replPrompt(reader);
+  state.prompt = replPrompt(reader, () => state.current?.signal);
+  reader.onInterrupt(() => interrupt(state, reader));
+  // Under a pipe Ctrl+C is a real SIGINT, which readline never sees.
+  process.on("SIGINT", () => interrupt(state, reader));
 
   console.log(
     chalk.bold("agent-app") +
@@ -749,6 +821,7 @@ async function main(): Promise<void> {
   await state.verifyGate();
 
   if (opts.prompt !== undefined) {
+    process.on("SIGINT", () => interrupt(state));
     await runOnce(state, opts.prompt);
     return;
   }

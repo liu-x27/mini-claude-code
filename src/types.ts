@@ -147,6 +147,12 @@ export interface SessionMetadata {
   totalInputTokens: number;
   totalOutputTokens: number;
   totalCost: number;
+  /**
+   * Why the last run ended early, when it did: the API failed, or the caller
+   * aborted it. The next run tells the model before its prompt, since a tool
+   * call in flight at that moment may have partly happened.
+   */
+  interrupted?: string;
 }
 
 export interface Session {
@@ -324,6 +330,8 @@ export type AgentEvent =
       durationMs: number;
     }
   | { type: "tool_retry"; toolUseId: string; toolName: string; error: string; verdict: RetryVerdict }
+  /** The reply was cut off by max_tokens in the middle of a tool call; the turn is asked again with more room. */
+  | { type: "turn_retry"; turn: number; reason: string; maxTokens: number }
   | { type: "stop_check"; turn: number; verdict: StopVerdict }
   | { type: "turn_start"; turn: number }
   | { type: "turn_end"; turn: number; usage: AgentUsage }

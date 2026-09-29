@@ -1,3 +1,4 @@
+import * as os from "node:os";
 import type Anthropic from "@anthropic-ai/sdk";
 import chalk from "chalk";
 import { AnthropicClient } from "./model/anthropic.js";
@@ -17,6 +18,8 @@ import type {
   ModelRouter,
   RetryJudge,
   RunOptions,
+  Session,
+  SessionMetadata,
   StopJudge,
   ToolCallRecord,
   ToolContext,
@@ -25,6 +28,7 @@ import type {
 } from "./types.js";
 import { estimateCost } from "./utils/cost.js";
 import { logger } from "./utils/logger.js";
+import { truncateMiddle } from "./utils/truncate.js";
 
 // Ensure built-in tools are registered
 registerBuiltinTools();
@@ -32,6 +36,8 @@ registerBuiltinTools();
 const DEFAULT_MODEL = "claude-opus-5";
 const DEFAULT_MAX_TURNS = 20;
 const DEFAULT_MAX_TOKENS = 16_000;
+/** How far a turn cut off mid tool call may raise max_tokens, doubling each time. */
+const MAX_RETRY_TOKENS = 64_000;
 
 const BASE_SYSTEM_PROMPT = `You are a helpful, capable AI assistant with access to tools.
 You can read and write files, run shell commands, search the web, and more.
@@ -129,7 +135,7 @@ export class Agent {
     await this.route(prompt);
 
     const messages: ConversationMessage[] = [...session.messages];
-    messages.push({ role: "user", content: prompt });
+    messages.push({ role: "user", content: userTurn(prompt, session.metadata.interrupted) });
 
     const toolCalls: ToolCallRecord[] = [];
     const usageAccum: AgentUsage = {
@@ -148,108 +154,112 @@ export class Agent {
     // instead would also flag a run that finished cleanly on its last turn.
     let finalStopReason = "max_turns";
 
-    while (turn < this.config.maxTurns) {
-      if (signal?.aborted) {
-        finalStopReason = "aborted";
-        break;
-      }
-      turn++;
-      await this.emit({ type: "turn_start", turn });
+    // Saved after every turn rather than once at the end. A run whose model
+    // call failed on turn five used to leave no session at all, while the
+    // tool calls of turns one to four had already changed the disk.
+    const save = (interrupted?: string) => this.persist(session, messages, turn, usageAccum, interrupted);
 
-      let response: ModelResponse;
-      try {
-        response = await this.client.create(
-          {
-            model: this.config.model,
-            system: this.buildSystemPrompt(),
-            messages: this.buildApiMessages(messages),
-            tools,
-            maxTokens: this.config.maxTokens,
-            thinking: this.config.thinking,
-            enableCaching: this.config.enableCaching,
-            stream: this.config.stream,
-            signal,
-          },
-          (delta) => this.emitDelta(delta),
-        );
-      } catch (err) {
+    try {
+      while (turn < this.config.maxTurns) {
         if (signal?.aborted) {
           finalStopReason = "aborted";
           break;
         }
-        throw err;
-      }
+        turn++;
+        await this.emit({ type: "turn_start", turn });
 
-      // Accumulate usage
-      const turnUsage = this.accumulateUsage(response, usageAccum);
-      await this.emit({ type: "turn_end", turn, usage: turnUsage });
+        const called = await this.callModel(turn, messages, tools, signal, usageAccum);
+        if (!called) {
+          finalStopReason = "aborted";
+          break;
+        }
+        const { response, maxTokens } = called;
 
-      // Append assistant message to history
-      messages.push({ role: "assistant", content: response.content });
-
-      const toolUseBlocks = response.content.filter(
-        (b): b is Anthropic.ToolUseBlockParam => b.type === "tool_use",
-      );
-
-      if (response.stopReason === "tool_use" && toolUseBlocks.length > 0) {
-        const toolResults = await this.executeTools(
-          toolUseBlocks,
-          toolCalls,
-          {
-            cwd: this.config.cwd,
-            sessionId: session.metadata.sessionId,
-            agentId: "main",
-            permissions: this.permissions.getContext(),
-          },
-          signal,
+        const toolUseBlocks = response.content.filter(
+          (b): b is Anthropic.ToolUseBlockParam => b.type === "tool_use",
         );
 
-        // Append tool results as user message
-        messages.push({ role: "user", content: toolResults });
+        if (response.stopReason === "tool_use" && toolUseBlocks.length > 0) {
+          // If the process dies while these run, the next run can say which
+          // calls were in flight: the saved history stops before this turn,
+          // and the note names what it was doing.
+          await save(`the process stopped while these tool calls were running: ${this.describeCalls(toolUseBlocks)}`);
 
-        // Every tool_use has its result by now, so stopping here leaves a
-        // transcript that resumes like any other.
-        const stopJudge = this.stopJudge;
-        if (stopJudge && !signal?.aborted) {
-          const verdict = await settle(
-            () => stopJudge({ prompt, turn, recent: this.trace(toolCalls) }),
-            (reason) => ({ stop: false, probability: undefined, reason }),
+          messages.push({ role: "assistant", content: response.content });
+          const toolResults = await this.executeTools(
+            toolUseBlocks,
+            toolCalls,
+            {
+              cwd: this.config.cwd,
+              sessionId: session.metadata.sessionId,
+              agentId: "main",
+              permissions: this.permissions.getContext(),
+            },
+            signal,
           );
-          await this.emit({ type: "stop_check", turn, verdict });
-          if (verdict.stop) {
-            finalStopReason = "stuck";
-            finalText = `Stopped: ${verdict.reason}.`;
-            break;
-          }
-        }
-        continue;
-      }
 
-      // end_turn, or any other stop reason
-      finalStopReason = response.stopReason;
-      finalText = this.extractText(response.content);
-      break;
+          // Append tool results as user message
+          messages.push({ role: "user", content: toolResults });
+          await save();
+
+          // Every tool_use has its result by now, so stopping here leaves a
+          // transcript that resumes like any other.
+          const stopJudge = this.stopJudge;
+          if (stopJudge && !signal?.aborted) {
+            const verdict = await settle(
+              () => stopJudge({ prompt, turn, recent: this.trace(toolCalls) }),
+              (reason) => ({ stop: false, probability: undefined, reason }),
+            );
+            await this.emit({ type: "stop_check", turn, verdict });
+            if (verdict.stop) {
+              finalStopReason = "stuck";
+              finalText = `Stopped: ${verdict.reason}.`;
+              break;
+            }
+          }
+          continue;
+        }
+
+        const text = this.extractText(response.content);
+        const notice = stopNotice(response.stopReason, maxTokens);
+
+        if (toolUseBlocks.length > 0) {
+          // It asked for tools and then stopped for another reason: cut off by
+          // max_tokens or the context window, or a refusal. That tool_use can
+          // never get its result, and a history holding one is refused on
+          // every later request, so the reply is dropped rather than saved
+          // and nothing it asked for runs.
+          finalStopReason = response.stopReason;
+          finalText = [text, notice, "It was in the middle of a tool call: nothing was run, and the partial reply was not saved."]
+            .filter(Boolean)
+            .join("\n\n");
+          break;
+        }
+
+        // end_turn, or any other stop reason
+        messages.push({ role: "assistant", content: response.content });
+        finalStopReason = response.stopReason;
+        finalText = text || notice || "";
+        break;
+      }
+    } catch (err) {
+      const reason = `the run failed (${err instanceof Error ? err.message : String(err)})`;
+      const last = messages[messages.length - 1];
+      const inFlight =
+        last?.role === "assistant" && Array.isArray(last.content)
+          ? last.content.filter((b): b is Anthropic.ToolUseBlockParam => b.type === "tool_use")
+          : [];
+      await save(inFlight.length > 0 ? `${reason} while these tool calls were running: ${this.describeCalls(inFlight)}` : reason);
+      throw err;
     }
 
     if (finalStopReason === "max_turns") {
       logger.warn(`Max turns (${this.config.maxTurns}) reached`);
     }
 
-    // Persist session. Also after an abort: every assistant tool_use already
-    // has its tool_result by now, so the transcript is valid to resume from.
-    if (this.config.persistSessions) {
-      const updatedSession = this.sessions.appendMessages(
-        session,
-        messages.slice(session.messages.length),
-      );
-      const finalSession = await this.sessions.updateMetadata(updatedSession, {
-        turns: session.metadata.turns + turn,
-        totalInputTokens: session.metadata.totalInputTokens + usageAccum.inputTokens,
-        totalOutputTokens: session.metadata.totalOutputTokens + usageAccum.outputTokens,
-        totalCost: session.metadata.totalCost + usageAccum.estimatedCostUsd,
-      });
-      await this.sessions.save(finalSession);
-    }
+    // Also after an abort: every assistant tool_use already has its
+    // tool_result by now, so the transcript is valid to resume from.
+    await save(finalStopReason === "aborted" ? "it was stopped before it finished" : undefined);
 
     const result: AgentResult = {
       text: finalText,
@@ -294,6 +304,75 @@ export class Agent {
   // Private helpers
   // ─────────────────────────────────────────────
 
+  /**
+   * One model call for this turn, asked again with more room when the reply
+   * was cut off by max_tokens in the middle of a tool call. Undefined when
+   * the caller aborted it.
+   */
+  private async callModel(
+    turn: number,
+    messages: ConversationMessage[],
+    tools: Tool[],
+    signal: AbortSignal | undefined,
+    usageAccum: AgentUsage,
+  ): Promise<{ response: ModelResponse; maxTokens: number } | undefined> {
+    let maxTokens = this.config.maxTokens;
+    let turnUsage: AgentUsage | undefined;
+
+    for (;;) {
+      let response: ModelResponse;
+      try {
+        response = await this.client.create(
+          {
+            model: this.config.model,
+            system: this.buildSystemPrompt(),
+            messages: this.buildApiMessages(messages),
+            tools,
+            maxTokens,
+            thinking: this.config.thinking,
+            enableCaching: this.config.enableCaching,
+            stream: this.config.stream,
+            signal,
+          },
+          (delta) => this.emitDelta(delta),
+        );
+      } catch (err) {
+        if (signal?.aborted) return undefined;
+        throw err;
+      }
+
+      const usage = this.accumulateUsage(response, usageAccum);
+      turnUsage = turnUsage ? sumUsage(turnUsage, usage) : usage;
+
+      const cutMidCall = response.stopReason === "max_tokens" && response.content.some((b) => b.type === "tool_use");
+      if (cutMidCall && maxTokens < MAX_RETRY_TOKENS && !signal?.aborted) {
+        const next = Math.min(maxTokens * 2, MAX_RETRY_TOKENS);
+        logger.warn(`Turn ${turn} was cut off at max_tokens=${maxTokens} mid tool call; asking again with ${next}`);
+        await this.emit({
+          type: "turn_retry",
+          turn,
+          reason: `cut off at max_tokens=${maxTokens} in the middle of a tool call`,
+          maxTokens: next,
+        });
+        maxTokens = next;
+        continue;
+      }
+
+      await this.emit({ type: "turn_end", turn, usage: turnUsage });
+      return { response, maxTokens };
+    }
+  }
+
+  /**
+   * Run one turn's tool calls, returning their results in the order asked.
+   *
+   * Calls that change nothing run together, up to AGENT_MAX_CONCURRENT_TOOLS
+   * at a time; a dangerous call (Bash, Write, Edit) waits for what came
+   * before it and runs alone. Everything used to run at once, and two Edits
+   * of one file in the same turn then read the same original: over 100
+   * turns on a 1 MB file, one edit was lost in 92–98 of them and the file
+   * was cut short in up to 7, with both calls reporting success.
+   */
   private async executeTools(
     toolUseBlocks: Anthropic.ToolUseBlockParam[],
     toolCallRecords: ToolCallRecord[],
@@ -301,17 +380,28 @@ export class Agent {
     signal: AbortSignal | undefined,
   ): Promise<Anthropic.ToolResultBlockParam[]> {
     const results: Anthropic.ToolResultBlockParam[] = [];
+    const maxConcurrent = Math.max(1, Number(process.env.AGENT_MAX_CONCURRENT_TOOLS ?? 4) || 4);
 
-    // Execute tools (concurrently within limit)
-    const maxConcurrent = Number(process.env.AGENT_MAX_CONCURRENT_TOOLS ?? 4);
-    const batches = chunk(toolUseBlocks, maxConcurrent);
+    let together: Anthropic.ToolUseBlockParam[] = [];
+    const flush = async () => {
+      for (const batch of chunk(together, maxConcurrent)) {
+        results.push(
+          ...(await Promise.all(batch.map((block) => this.executeTool(block, toolCallRecords, context, signal)))),
+        );
+      }
+      together = [];
+    };
 
-    for (const batch of batches) {
-      const batchResults = await Promise.all(
-        batch.map((block) => this.executeTool(block, toolCallRecords, context, signal)),
-      );
-      results.push(...batchResults);
+    for (const block of toolUseBlocks) {
+      // An unknown tool counts as dangerous: it is refused, but in order.
+      if (this.registry.get(block.name)?.dangerous === false) {
+        together.push(block);
+        continue;
+      }
+      await flush();
+      results.push(await this.executeTool(block, toolCallRecords, context, signal));
     }
+    await flush();
 
     return results;
   }
@@ -328,8 +418,12 @@ export class Agent {
     signal: AbortSignal | undefined,
   ): Promise<Anthropic.ToolResultBlockParam> {
     const toolUseId = block.id;
-    const input = block.input as Record<string, unknown>;
-    await this.emit({ type: "tool_request", toolUseId, toolName: block.name, input });
+    await this.emit({
+      type: "tool_request",
+      toolUseId,
+      toolName: block.name,
+      input: block.input as Record<string, unknown>,
+    });
 
     const refuse = async (reason: string, content: string) => {
       await this.emit({ type: "tool_denied", toolUseId, toolName: block.name, reason });
@@ -341,6 +435,14 @@ export class Agent {
       logger.warn(`Unknown tool: ${block.name}`);
       return refuse("not registered", `Error: Tool "${block.name}" is not registered.`);
     }
+
+    // Before the permission check, so a prompt or the gate never judges an
+    // input the tool would not have accepted.
+    const checked = tool.validate(block.input);
+    if (!checked.ok) {
+      return refuse("invalid input", `Error: invalid input for ${tool.name}: ${checked.error}. Fix the arguments and call it again.`);
+    }
+    const input = checked.value;
 
     // Permission check
     const allowed = await this.permissions.check({
@@ -362,7 +464,7 @@ export class Agent {
     const start = Date.now();
     const attempt = async (): Promise<ToolResult> => {
       try {
-        return await tool.execute(input, context);
+        return capOutput(await tool.execute(input, context));
       } catch (err) {
         return { type: "error", message: `${tool.name} threw: ${err instanceof Error ? err.message : String(err)}` };
       }
@@ -410,6 +512,21 @@ export class Agent {
     });
   }
 
+  /** `Bash(npm test), Edit(src/a.ts: "x")` — what a turn's calls were, for the interruption note. */
+  private describeCalls(blocks: Anthropic.ToolUseBlockParam[]): string {
+    return blocks
+      .map((b) => {
+        const tool = this.registry.get(b.name);
+        const input = b.input as Record<string, unknown>;
+        try {
+          return tool ? `${b.name}(${tool.summarize(input)})` : b.name;
+        } catch {
+          return b.name;
+        }
+      })
+      .join(", ");
+  }
+
   /**
    * Let the router pick the model for this run, if one is configured.
    *
@@ -441,6 +558,9 @@ export class Agent {
     const parts = [BASE_SYSTEM_PROMPT];
     if (this.config.systemPrompt) parts.push(this.config.systemPrompt);
     parts.push(`\nCurrent working directory: ${this.config.cwd}`);
+    // The model was never told, and wrote bash for a tool that ran cmd.exe.
+    // The Bash tool's description names the shell itself.
+    parts.push(`Platform: ${os.type()} ${os.release()} (${process.platform})`);
     parts.push(`Current date: ${new Date().toISOString().slice(0, 10)}`);
     return parts.join("\n\n");
   }
@@ -477,6 +597,31 @@ export class Agent {
     accum.estimatedCostUsd += cost;
 
     return { inputTokens, outputTokens, cacheCreationTokens, cacheReadTokens, estimatedCostUsd: cost };
+  }
+
+  /**
+   * Write the session as it stands. A trailing assistant turn whose tool_use
+   * has no result yet is left out, so what is on disk can always be resumed.
+   */
+  private async persist(
+    base: Session,
+    messages: ConversationMessage[],
+    turns: number,
+    usage: AgentUsage,
+    interrupted: string | undefined,
+  ): Promise<void> {
+    if (!this.config.persistSessions) return;
+
+    const { interrupted: _previous, ...meta } = base.metadata;
+    const metadata: SessionMetadata = {
+      ...meta,
+      turns: meta.turns + turns,
+      totalInputTokens: meta.totalInputTokens + usage.inputTokens,
+      totalOutputTokens: meta.totalOutputTokens + usage.outputTokens,
+      totalCost: meta.totalCost + usage.estimatedCostUsd,
+      ...(interrupted ? { interrupted } : {}),
+    };
+    await this.sessions.save({ metadata, messages: withoutDanglingToolUse(messages) });
   }
 
   private async initSession() {
@@ -531,4 +676,59 @@ async function settle<T>(judge: () => Promise<T>, fallback: (reason: string) => 
     logger.warn(`Judge failed, carrying on without it: ${message}`);
     return fallback(`judge failed: ${message}`);
   }
+}
+
+/**
+ * The prompt as the model receives it, with a note first when the last run
+ * ended early. Appended, never edited into earlier turns, so the cached
+ * prefix and the history's thinking blocks stay valid.
+ */
+function userTurn(prompt: string, interrupted: string | undefined): ConversationMessage["content"] {
+  if (!interrupted) return prompt;
+  return [
+    {
+      type: "text",
+      text: `[Note from the harness: the previous run in this session ended early — ${interrupted}. The history above is what was recorded; check the current state before relying on its last step.]`,
+    },
+    { type: "text", text: prompt },
+  ];
+}
+
+/** What to tell the caller when the model stopped for a reason other than finishing. */
+function stopNotice(stopReason: string, maxTokens: number): string | undefined {
+  switch (stopReason) {
+    case "max_tokens":
+      return `The reply hit max_tokens (${maxTokens.toLocaleString("en-US")}).`;
+    case "refusal":
+      return "The model declined to continue (stop_reason: refusal).";
+    case "model_context_window_exceeded":
+      return "The conversation no longer fits in the model's context window; start a new session.";
+    default:
+      return undefined;
+  }
+}
+
+/** A tool result as the model sees it: at most MAX_TOOL_OUTPUT_CHARS, head and tail kept. */
+function capOutput(result: ToolResult): ToolResult {
+  return result.type === "success"
+    ? { type: "success", output: truncateMiddle(result.output) }
+    : { type: "error", message: truncateMiddle(result.message) };
+}
+
+function sumUsage(a: AgentUsage, b: AgentUsage): AgentUsage {
+  return {
+    inputTokens: a.inputTokens + b.inputTokens,
+    outputTokens: a.outputTokens + b.outputTokens,
+    cacheCreationTokens: a.cacheCreationTokens + b.cacheCreationTokens,
+    cacheReadTokens: a.cacheReadTokens + b.cacheReadTokens,
+    estimatedCostUsd: a.estimatedCostUsd + b.estimatedCostUsd,
+  };
+}
+
+/** The history minus a trailing assistant turn that asked for tools it never got results for. */
+function withoutDanglingToolUse(messages: ConversationMessage[]): ConversationMessage[] {
+  const last = messages[messages.length - 1];
+  const dangling =
+    last?.role === "assistant" && Array.isArray(last.content) && last.content.some((b) => b.type === "tool_use");
+  return dangling ? messages.slice(0, -1) : messages;
 }

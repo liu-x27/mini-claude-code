@@ -50,7 +50,13 @@ export class SessionManager {
     }
   }
 
-  /** Save a session to disk */
+  /**
+   * Save a session to disk.
+   *
+   * The agent saves after every turn now, so a crash can land mid-write:
+   * the file is written beside its final name and renamed over it, and a
+   * reader sees the old session or the new one, never half of one.
+   */
   async save(session: Session): Promise<void> {
     try {
       await fs.mkdir(this.sessionDir, { recursive: true });
@@ -59,7 +65,16 @@ export class SessionManager {
         ...session,
         metadata: { ...session.metadata, updatedAt: new Date().toISOString() },
       };
-      await fs.writeFile(filePath, JSON.stringify(updated, null, 2), "utf-8");
+      const body = JSON.stringify(updated, null, 2);
+      const temp = `${filePath}.${process.pid}.tmp`;
+      await fs.writeFile(temp, body, "utf-8");
+      try {
+        await fs.rename(temp, filePath);
+      } catch {
+        // Windows refuses the rename while another process has the file open.
+        await fs.writeFile(filePath, body, "utf-8");
+        await fs.unlink(temp).catch(() => undefined);
+      }
     } catch (err) {
       logger.warn(`Failed to save session: ${String(err)}`);
     }

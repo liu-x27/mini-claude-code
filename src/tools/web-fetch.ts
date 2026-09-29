@@ -6,7 +6,8 @@ interface WebFetchInput {
   max_length?: number;
 }
 
-const MAX_CHARS = 50_000;
+// The central tool-output limit applies anyway; this is also the most the model may ask for.
+const MAX_CHARS = 40_000;
 
 /**
  * Fetch a URL and return its text content.
@@ -27,14 +28,14 @@ export class WebFetchTool extends Tool<WebFetchInput> {
       },
       max_length: {
         type: "number" as const,
-        description: `Maximum characters to return (default: ${MAX_CHARS})`,
+        description: `Maximum characters to return (default and upper limit: ${MAX_CHARS})`,
       },
     },
     required: ["url"],
   };
 
   override async execute(input: WebFetchInput, _context: ToolContext): Promise<ToolResult> {
-    const maxLen = input.max_length ?? MAX_CHARS;
+    const maxLen = Math.min(Math.max(input.max_length ?? MAX_CHARS, 1), MAX_CHARS);
 
     let res: Response;
     try {

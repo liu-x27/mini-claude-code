@@ -475,6 +475,9 @@ function forward(event: AgentEvent, send: (event: string, data: unknown) => void
     case "turn_start":
       send("turn_start", { turn: event.turn });
       break;
+    case "turn_retry":
+      send("turn_retry", { turn: event.turn, reason: event.reason, maxTokens: event.maxTokens });
+      break;
     case "turn_end":
       send("turn_end", { turn: event.turn, usage: webUsage(event.usage) });
       break;

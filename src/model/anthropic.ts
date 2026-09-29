@@ -26,29 +26,20 @@ export class AnthropicClient implements ModelClient {
     this.name = options.baseURL ? `anthropic @ ${options.baseURL}` : "anthropic";
   }
 
+  /**
+   * Always streams on the wire, and forwards deltas only when asked to.
+   *
+   * The SDK refuses a non-streaming request whose max_tokens could take more
+   * than ten minutes, and the loop raises max_tokens to retry a turn that was
+   * cut off, so a non-streaming path would fail exactly when it is needed.
+   */
   async create(
     request: ModelRequest,
     onDelta: (delta: ModelDelta) => Promise<void>,
   ): Promise<ModelResponse> {
-    const tools = request.tools.map((t) => t.toAnthropicTool());
-    const params = {
-      model: request.model,
-      max_tokens: request.maxTokens,
-      system: request.enableCaching
-        ? [{ type: "text" as const, text: request.system, cache_control: { type: "ephemeral" as const } }]
-        : request.system,
-      messages: request.messages,
-      thinking: request.thinking as Anthropic.ThinkingConfigParam,
-      ...(tools.length > 0 && {
-        tools,
-        tool_choice: { type: "auto" } as Anthropic.ToolChoiceAuto,
-      }),
-    };
     const options = request.signal ? { signal: request.signal } : undefined;
-
-    let message: Anthropic.Message;
+    const stream = this.client.messages.stream(buildParams(request), options);
     if (request.stream) {
-      const stream = this.client.messages.stream(params, options);
       for await (const event of stream) {
         if (event.type !== "content_block_delta") continue;
         if (event.delta.type === "text_delta") {
@@ -57,10 +48,8 @@ export class AnthropicClient implements ModelClient {
           await onDelta({ type: "thinking", thinking: event.delta.thinking });
         }
       }
-      message = await stream.finalMessage();
-    } else {
-      message = await this.client.messages.create({ ...params, stream: false }, options);
     }
+    const message = await stream.finalMessage();
 
     const u = message.usage;
     return {
@@ -74,4 +63,22 @@ export class AnthropicClient implements ModelClient {
       },
     };
   }
+}
+
+/** The request body, without the transport. Exported so the mock suite can check it. */
+export function buildParams(request: ModelRequest): Anthropic.MessageCreateParamsNonStreaming {
+  const tools = request.tools.map((t) => t.toAnthropicTool());
+  return {
+    model: request.model,
+    max_tokens: request.maxTokens,
+    system: request.enableCaching
+      ? [{ type: "text" as const, text: request.system, cache_control: { type: "ephemeral" as const } }]
+      : request.system,
+    messages: request.messages,
+    thinking: request.thinking as Anthropic.ThinkingConfigParam,
+    ...(tools.length > 0 && {
+      tools,
+      tool_choice: { type: "auto" } as Anthropic.ToolChoiceAuto,
+    }),
+  };
 }

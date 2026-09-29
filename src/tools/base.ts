@@ -1,5 +1,6 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import type { ToolContext, ToolInputSchema, ToolResult } from "../types.js";
+import { type Validated, validateInput } from "./validate.js";
 
 /**
  * Abstract base class for all Agent tools.
@@ -23,15 +24,25 @@ export abstract class Tool<TInput extends object = Record<string, unknown>> {
   /**
    * Whether this tool performs potentially dangerous operations.
    * Dangerous tools trigger permission checks before execution.
+   *
+   * It also decides scheduling: calls to tools that are not dangerous run
+   * concurrently, and a dangerous call runs alone, in the order the model
+   * made it. Two Edits of one file in the same turn used to run at once, and
+   * one of them was lost more often than not while both reported success.
    */
   readonly dangerous: boolean = false;
 
   /**
    * Execute the tool with the given input.
-   * @param input - Validated input matching `inputSchema`
+   * @param input - Input that has passed `validate()` against `inputSchema`
    * @param context - Runtime context (cwd, session info, permissions)
    */
   abstract execute(input: TInput, context: ToolContext): Promise<ToolResult>;
+
+  /** Check a call's input against `inputSchema`; the agent loop runs this before `execute`. */
+  validate(input: unknown): Validated {
+    return validateInput(this.inputSchema, input);
+  }
 
   /**
    * Build the Anthropic SDK tool definition for this tool.
