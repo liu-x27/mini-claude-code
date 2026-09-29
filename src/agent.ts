@@ -6,6 +6,7 @@ import chalk from "chalk";
 import { COMPACTION_PROMPT, compactedHistory, defaultCompactAt, renderTranscript } from "./context/compaction.js";
 import { loadProjectInstructions } from "./context/instructions.js";
 import { discoverSkills, SkillTool, skillsNote } from "./context/skills.js";
+import { GENERAL_PURPOSE, TaskTool } from "./tools/task.js";
 import { type HookEvent, type HookInput, type HookOutcome, type HooksConfig, runHooks } from "./hooks/index.js";
 import { AnthropicClient } from "./model/anthropic.js";
 import type { ModelClient, ModelDelta, ModelResponse } from "./model/types.js";
@@ -48,6 +49,9 @@ const DEFAULT_MAX_TOKENS = 16_000;
 const MAX_RETRY_TOKENS = 64_000;
 /** How many times a Stop hook may send the model back to work in one run. */
 const MAX_STOP_CONTINUATIONS = 5;
+
+const SUBAGENT_NOTE =
+  "You are a subagent, working on one task for another agent. It sees nothing of what you do except your final message, so make that message a complete, self-contained answer to the task.";
 
 const BASE_SYSTEM_PROMPT = `You are a helpful, capable AI assistant with access to tools.
 You can read and write files, run shell commands, search the web, and more.
@@ -94,8 +98,13 @@ export class Agent {
   private sessionId = "";
   /** Set when a hook answers `continue: false`: the run ends after the call in progress. */
   private hookStop: string | undefined;
-  /** Tools the agent adds to the registry's for a run: the Skill tool, when there are skills. */
+  /** Tools the agent adds to the registry's for a run: the Skill tool, when there are skills, and Task. */
   private extraTools = new Map<string, Tool>();
+  /** 0 for an agent a caller made; 1 for a subagent, which gets no Task tool. */
+  private depth = 0;
+  /** The current run's signal and usage, which a subagent the run starts shares. */
+  private runSignal: AbortSignal | undefined;
+  private runUsage: AgentUsage | undefined;
 
   constructor(config: AgentConfig = {}, registry?: ToolRegistry) {
     this.client = config.client ?? new AnthropicClient();
@@ -156,8 +165,12 @@ export class Agent {
     const skills = this.config.skills ? await discoverSkills(this.config.cwd) : [];
     this.extraTools.clear();
     // Tool<SkillInput> is a Tool: the registry holds its tools the same way.
-    if (skills.length > 0) this.extraTools.set("Skill", new SkillTool() as unknown as Tool);
+    if (skills.length > 0) this.offer(new SkillTool() as unknown as Tool);
+    if (this.depth === 0) {
+      this.offer(new TaskTool(this.config.subagents, (type, task) => this.runSubagent(type, task)) as unknown as Tool);
+    }
     const tools = [...this.resolveTools(), ...this.extraTools.values()];
+    this.runSignal = signal;
     const session = await this.initSession();
     await this.emit({
       type: "session",
@@ -176,6 +189,7 @@ export class Agent {
       cacheReadTokens: 0,
       estimatedCostUsd: 0,
     };
+    this.runUsage = usageAccum;
 
     const messages: ConversationMessage[] = [...session.messages];
     const notes: string[] = [];
@@ -812,6 +826,62 @@ export class Agent {
     }
     this.config.model = verdict.model;
     session.metadata.model = verdict.model;
+  }
+
+  /** Add a tool of the agent's own for this run, unless allowedTools / disallowedTools rule it out. */
+  private offer(tool: Tool): void {
+    const { allowedTools, disallowedTools } = this.config;
+    if (allowedTools.length > 0 && !allowedTools.includes(tool.name)) return;
+    if (disallowedTools.includes(tool.name)) return;
+    this.extraTools.set(tool.name, tool);
+  }
+
+  /**
+   * Run a subagent for the Task tool: same client and working directory, a
+   * fresh conversation, and this agent's permission system, so its calls are
+   * asked about in the same queue, under the same rules and gate. Its usage
+   * is added to this run's, and what it does is reported as `subagent` events.
+   */
+  private async runSubagent(type: string, task: string): Promise<{ text: string; stopReason: string }> {
+    const def = type === GENERAL_PURPOSE ? undefined : this.config.subagents[type];
+    const hooks = this.hooks
+      ? {
+          ...(this.hooks.PreToolUse ? { PreToolUse: this.hooks.PreToolUse } : {}),
+          ...(this.hooks.PermissionRequest ? { PermissionRequest: this.hooks.PermissionRequest } : {}),
+          ...(this.hooks.PostToolUse ? { PostToolUse: this.hooks.PostToolUse } : {}),
+        }
+      : undefined;
+    const child = new Agent(
+      {
+        client: this.client,
+        model: def?.model ?? this.config.model,
+        systemPrompt: [def?.systemPrompt, SUBAGENT_NOTE].filter(Boolean).join("\n\n"),
+        cwd: this.config.cwd,
+        maxTurns: this.config.maxTurns,
+        maxTokens: this.config.maxTokens,
+        thinking: this.config.thinking,
+        ...(this.effort ? { effort: this.effort } : {}),
+        ...(this.compactAt !== undefined ? { compactAt: this.compactAt } : {}),
+        allowedTools: def?.allowedTools ?? this.config.allowedTools,
+        disallowedTools: this.config.disallowedTools,
+        persistSessions: false,
+        enableCaching: this.config.enableCaching,
+        projectInstructions: this.config.projectInstructions,
+        skills: false,
+        stream: false,
+        ...(hooks ? { hooks } : {}),
+        ...(this.retryJudge ? { retryJudge: this.retryJudge } : {}),
+        ...(this.stopJudge ? { stopJudge: this.stopJudge } : {}),
+      },
+      this.registry,
+    );
+    child.depth = this.depth + 1;
+    child.permissions = this.permissions;
+    child.on((event) => this.emit({ type: "subagent", subagent: type, event }));
+
+    const result = await child.run(task, { signal: this.runSignal });
+    if (this.runUsage) Object.assign(this.runUsage, sumUsage(this.runUsage, result.usage));
+    return { text: result.text, stopReason: result.stopReason };
   }
 
   private lookup(name: string): Tool | undefined {

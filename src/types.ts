@@ -247,7 +247,11 @@ export interface AgentConfig {
   /** Session storage directory */
   sessionDir?: string;
 
-  /** Subagent definitions */
+  /**
+   * Subagent types the Task tool offers besides "general-purpose". The Task
+   * tool is there unless `disallowedTools` names it (or `allowedTools` leaves
+   * it out); a subagent never gets one of its own.
+   */
   subagents?: Record<string, SubagentDefinition>;
 
   /** Enable prompt caching (default: true) */
@@ -401,6 +405,8 @@ export type AgentEvent =
   | { type: "turn_retry"; turn: number; reason: string; maxTokens: number }
   /** The history was replaced by a summary; `transcript` is where the full one was archived. */
   | { type: "compacted"; turn: number; promptTokens: number; transcript: string | undefined }
+  /** Something a subagent the Task tool started did, for a host that wants to show it. */
+  | { type: "subagent"; subagent: string; event: AgentEvent }
   | { type: "stop_check"; turn: number; verdict: StopVerdict }
   | { type: "turn_start"; turn: number }
   | { type: "turn_end"; turn: number; usage: AgentUsage }

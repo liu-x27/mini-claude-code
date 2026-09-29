@@ -1951,6 +1951,51 @@ await checkAsync("Skills：新会话只列名字和描述，Skill 工具按需�
   if (tools.includes("Skill") || JSON.stringify(c3.seen[0]).includes("pdf-tools")) throw new Error("关掉之后还提供了技能");
 });
 
+await checkAsync("Task：子代理在空白上下文里做一件事，只交回最终答案；用量记到父级；子代理自己没有 Task", async () => {
+  const seen: Array<{ tools: string[]; messages: ModelRequest["messages"]; system: string }> = [];
+  const note = (req: ModelRequest) => seen.push({ tools: req.tools.map((t) => t.name), messages: req.messages, system: req.system });
+  const client = new ScriptedClient([
+    async (req) => (note(req), calls(["t1", "Task", { description: "find parser", prompt: "Find where the parser is defined and name the file." }])),
+    async (req) => (note(req), { ...said("It is in src/parser.ts."), usage: { inputTokens: 700, outputTokens: 30, cacheCreationTokens: 0, cacheReadTokens: 0 } }),
+    async (req) => (note(req), said("done")),
+  ]);
+  const { agent, events } = scriptedAgent(client);
+  const result = await agent.run("where is the parser? use a subagent");
+  const [parent, child, after] = seen;
+  if (!parent || !child || !after) throw new Error(`模型只被调了 ${seen.length} 次`);
+  if (!parent.tools.includes("Task") || child.tools.includes("Task")) throw new Error("父级该有 Task，子代理不该有");
+  const childView = JSON.stringify(child.messages);
+  if (!childView.includes("Find where the parser") || childView.includes("use a subagent")) throw new Error("子代理的上下文不是空白的");
+  if (!child.system.includes("You are a subagent")) throw new Error("子代理应被告知它只交回最终答案");
+  if (toolResultsIn(after.messages)[0]?.content !== "It is in src/parser.ts.") throw new Error("父级没拿到子代理的答案");
+  if (result.usage.inputTokens < 700) throw new Error(`子代理的用量没算进来: ${result.usage.inputTokens}`);
+  if (!events.some((e) => e.type === "subagent")) throw new Error("没有 subagent 事件");
+});
+
+await checkAsync("Task：自定义的子代理类型只拿到它允许的工具；没有的类型报错；disallowedTools 可以去掉 Task", async () => {
+  let childTools: string[] = [];
+  const client = new ScriptedClient([
+    calls(["a", "Task", { description: "review", prompt: "Review this.", subagent_type: "reviewer" }]),
+    async (req) => ((childTools = req.tools.map((t) => t.name)), said("looks fine")),
+    calls(["b", "Task", { description: "x", prompt: "x", subagent_type: "nope" }]),
+    said("done"),
+  ]);
+  await scriptedAgent(client, {
+    subagents: { reviewer: { description: "Reads and reviews code", allowedTools: ["Echo"], systemPrompt: "Review carefully." } },
+  }).agent.run("go");
+  if (childTools.join(",") !== "Echo") throw new Error(`reviewer 的工具: ${childTools.join(",")}`);
+  const unknown = toolResultsIn(client.seen[3]!)[0];
+  // 输入校验先拦下（enum），并告诉模型有哪些类型
+  if (!unknown?.is_error || !String(unknown.content).includes('must be one of "general-purpose", "reviewer"')) {
+    throw new Error(`未知类型: ${JSON.stringify(unknown)}`);
+  }
+
+  let tools: string[] = [];
+  const off = new ScriptedClient([async (req) => ((tools = req.tools.map((t) => t.name)), said("ok"))]);
+  await scriptedAgent(off, { disallowedTools: ["Task"] }).agent.run("go");
+  if (tools.includes("Task")) throw new Error("disallowedTools 没去掉 Task");
+});
+
 check("parseRule：读 Claude Code 的规则写法，写错就报错", () => {
   const r = parseRule("Bash(npm run test:* )", "allow");
   if (r.tool !== "Bash" || r.pattern !== "npm run test:*" || r.mode !== "allow") throw new Error(JSON.stringify(r));

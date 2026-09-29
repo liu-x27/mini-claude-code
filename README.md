@@ -213,6 +213,15 @@ server ran `defaultMode: "allow"` and executed every tool call without asking, w
 the one configuration the CLI never offered. It fails closed on a timeout and on the tab
 closing.
 
+**Subagents**: a `Task` tool hands a self-contained task to a subagent with a fresh
+context and returns only its final answer, so a search across many files costs the
+conversation one result. `general-purpose` has every tool but Task; `subagents` in the
+config adds types with their own prompt, tools and model. A subagent shares the parent's
+client and permission system — its calls are asked about in the same queue, under the same
+rules — its usage counts toward the parent's, and it runs one at a time, since two editing
+the same files at once would be the race the scheduling exists to prevent. The CLI shows
+its tool calls indented under the Task call.
+
 **Skills** (`src/context/skills.ts`) follow the Agent Skills standard: a folder with a
 `SKILL.md` whose frontmatter gives a name and a description, under `.agents/skills`,
 `.claude/skills` or `.agent-app/skills`, in the project first and then the home directory.

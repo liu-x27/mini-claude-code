@@ -502,6 +502,14 @@ function attachRenderer(agent: Agent): void {
         console.log(chalk.gray(`   ${status} in ${event.durationMs}ms`));
         break;
       }
+      case "subagent":
+        if (event.event.type === "tool_start") {
+          endStream();
+          console.log(
+            chalk.gray(`   ↳ ${event.subagent} ⚙ ${event.event.toolName} — ${JSON.stringify(event.event.input).slice(0, 90)}`),
+          );
+        }
+        break;
       case "compacted": {
         endStream();
         const where = event.transcript ? ` — full transcript: ${event.transcript}` : "";
