@@ -533,6 +533,6 @@ const PORT = Number(process.env["PORT"] ?? 3001);
 app.listen(PORT, "127.0.0.1", () => {
   console.log(`\n🚀 Agent API server running at http://127.0.0.1:${PORT} (this machine only)`);
   console.log(`   API Key: ${process.env["ANTHROPIC_API_KEY"] ? "✓ set" : "✗ not set (enter in UI)"}`);
-  console.log(`   Tools: ${globalRegistry.names().join(", ")}`);
+  console.log(`   Tools: ${globalRegistry.names().join(", ")}, running in ${process.cwd()}`);
   console.log(`   Asks before Bash / Write / Edit / WebFetch and MCP tools; risk gate: ${gate ? `${gateLabel}, for Bash only` : "off"}\n`);
 });
