@@ -1,23 +1,52 @@
-# mini-claude-code
+<div align="center">
+
+<a href="https://liu-x27.github.io/mini-claude-code/">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/brand/lockup-dark.svg">
+  <img alt="mini-claude-code" src="docs/brand/lockup-light.svg" width="460">
+</picture>
+</a>
+
+### Doesn't ask about `wc -l`. Does ask about `rm -rf`.
+
+A small, readable coding-agent harness on the Claude API, with a risk gate that asks a
+local model four narrow questions about every shell command, runs the ones that clear
+all four, and brings you the rest.
 
 [![CI](https://github.com/liu-x27/mini-claude-code/actions/workflows/ci.yml/badge.svg)](https://github.com/liu-x27/mini-claude-code/actions/workflows/ci.yml)
+![TypeScript](https://img.shields.io/badge/TypeScript-5.3k_lines_in_src-141311?style=flat-square&logo=typescript&logoColor=white)
+![MCP](https://img.shields.io/badge/MCP-stdio_%2B_HTTP-141311?style=flat-square)
+![ACP](https://img.shields.io/badge/Agent_Client_Protocol-editors-141311?style=flat-square)
+![Claude Code hooks](https://img.shields.io/badge/Claude_Code-hooks_%26_rules-d7361f?style=flat-square)
+![Agent Skills](https://img.shields.io/badge/Agent_Skills-compatible-141311?style=flat-square)
 
-A small, readable agent framework built on the Claude API — the agentic loop, a tool
-registry, a permission system, and session persistence — with four ways to drive it: a
-terminal REPL (or `-p`, with JSON output for scripts), a web UI, the Agent Client
-Protocol for an editor, and a library API.
+**[Project page](https://liu-x27.github.io/mini-claude-code/)** · [The gate](#the-risk-gate) · [Evidence](#what-it-measures) · [Quickstart](#quickstart) · [How it works](#how-it-works) · [Measurements](docs/measurements.md)
+
+</div>
+
+<br>
 
 ![One session in the web UI: a task list, a subagent, one command the risk gate clears and one it holds](docs/session.gif)
 
 A real session, recorded from the web UI by `docs/capture-session.mjs`: `qwen3:14b` on a
 local Ollama drives the loop, `llama3.1:8b` is the judge, and 143 seconds play at 6×. The
 model writes a task list and hands a lookup to a subagent, which reads one file and
-answers that the gate scores Bash only, quoting the line that says so. It runs `wc -l src/agent.ts`, which the gate clears with all four answers
-under 0.20, and asks for `rm -rf dist`, which the gate holds at 0.993 and which is denied.
-The clip stops as the model starts its reply; that reply said the call was blocked, left
-the item open, and less usefully suggested checking the directory's permissions. It is
-the fourth of five takes. The first found the defect described under
-[Status](#status), and in two of the others the model marked the denied item done anyway.
+answers that the gate scores Bash only, quoting the line that says so. It runs
+`wc -l src/agent.ts`, which the gate clears with all four answers under 0.20, and asks for
+`rm -rf dist`, which the gate holds at 0.993 and which is denied. The clip stops as the
+model starts its reply; that reply said the call was blocked, left the item open, and less
+usefully suggested checking the directory's permissions. It is the fourth of five takes.
+The first found the defect described under [Status](#status), and in two of the others
+the model marked the denied item done anyway.
+
+| **0 / 76** | **38%** | **85%** | **9** |
+|:---:|:---:|:---:|:---:|
+| unsafe commands cleared, on 153 it had never seen | of the 77 safe ones there cleared without a prompt | cleared on the dev set that chose the threshold | silent failures found by driving the harness, each now a check |
+
+A small, readable agent framework built on the Claude API — the agentic loop, a tool
+registry, a permission system, and session persistence — with four ways to drive it: a
+terminal REPL (or `-p`, with JSON output for scripts), a web UI, the Agent Client
+Protocol for an editor, and a library API.
 
 It is deliberately not a wrapper around someone else's agent SDK. The loop, the tool
 protocol, and the permission model are all in `src/`, about 5,300 lines of TypeScript.
@@ -45,19 +74,21 @@ cp .env.example .env    # add your ANTHROPIC_API_KEY
 npm run cli
 ```
 
-The risk gate (below) is the one part that needs a second provider, because it
-reads token probabilities and the Anthropic Messages API does not return them.
-A local Ollama does, needs no key, and costs nothing:
+> [!TIP]
+> The risk gate (below) is the one part that needs a second provider, because it
+> reads token probabilities and the Anthropic Messages API does not return them.
+> A local Ollama does, needs no key, and costs nothing:
+>
+> ```bash
+> ollama pull llama3.1:8b
+> AGENT_JUDGE_API_KEY=ollama AGENT_JUDGE_BASE_URL=http://localhost:11434/v1 AGENT_JUDGE_MODEL=llama3.1:8b npm run cli -- --ask --gate
+> ```
 
-```bash
-ollama pull llama3.1:8b
-AGENT_JUDGE_API_KEY=ollama AGENT_JUDGE_BASE_URL=http://localhost:11434/v1 AGENT_JUDGE_MODEL=llama3.1:8b npm run cli -- --ask --gate
-```
-
-Without it, `--gate allowlist` is offline and needs nothing — it just clears
-less. `npm run eval:risk-gate` runs on the allow-list and needs no setup at
-all, so its rows are reproducible from a clean clone; the `llm` rows need a
-judge standing up first.
+> [!NOTE]
+> Without it, `--gate allowlist` is offline and needs nothing — it just clears
+> less. `npm run eval:risk-gate` runs on the allow-list and needs no setup at
+> all, so its rows are reproducible from a clean clone; the `llm` rows need a
+> judge standing up first.
 
 The gate in a real session, in both directions:
 
