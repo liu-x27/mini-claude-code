@@ -783,7 +783,13 @@ await checkAsync("被拒的调用发 tool_denied，不发 tool_start", async () 
   await agent.run("go");
   const types = events.filter((e) => "toolUseId" in e).map((e) => e.type);
   if (types.join(",") !== "tool_request,tool_denied") throw new Error(`事件序列: ${types.join(",")}`);
-  if (!toolResultsIn(client.seen[1]!)[0]?.is_error) throw new Error("模型应该收到一个错误结果");
+  const result = toolResultsIn(client.seen[1]!)[0];
+  if (!result?.is_error) throw new Error("模型应该收到一个错误结果");
+  // "Permission denied" 读起来像文件系统报错：qwen3:14b 被拒了 rm -rf dist 就去跑 icacls 提权
+  const text = String(result.content);
+  if (!/declined/.test(text) || /permission denied/i.test(text) || !/not a file-system error/.test(text)) {
+    throw new Error(`拒绝的说法: ${text}`);
+  }
 });
 
 await checkAsync("中止：不再开新一轮，会话照样保存、可以续上", async () => {

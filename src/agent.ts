@@ -691,7 +691,12 @@ export class Agent {
       pre.allow ? { hook: "allow" } : pre.ask ? { hook: "ask" } : {},
     );
     if (!allowed) {
-      return refuse("permission denied", `Permission denied for tool: ${tool.name}`);
+      // Not "Permission denied": qwen3:14b read that as a file-system error and
+      // answered a declined `rm -rf dist` with `icacls dist /grant administrators:F`.
+      return refuse(
+        "permission denied",
+        `The ${tool.name} call was declined, by the user or a permission rule, so it did not run. This is not a file-system error: do not try to get the same result another way, such as changing permissions, elevating, or a different command. Tell the user what you wanted to do and why.`,
+      );
     }
     // An approval can take minutes; the run may have been stopped meanwhile.
     if (signal?.aborted) {
