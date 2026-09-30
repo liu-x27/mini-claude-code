@@ -1,6 +1,7 @@
 {
   "name": "agent-app",
   "version": "0.1.0",
+  "license": "MIT",
   "description": "A production-grade, extensible Agent framework powered by Claude",
   "type": "module",
   "main": "./dist/index.js",

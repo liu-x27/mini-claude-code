@@ -19,6 +19,7 @@ all four, and brings you the rest.
 ![ACP](https://img.shields.io/badge/Agent_Client_Protocol-editors-141311?style=flat-square)
 ![Claude Code hooks](https://img.shields.io/badge/Claude_Code-hooks_%26_rules-d7361f?style=flat-square)
 ![Agent Skills](https://img.shields.io/badge/Agent_Skills-compatible-141311?style=flat-square)
+[![License: MIT](https://img.shields.io/badge/license-MIT-141311?style=flat-square)](LICENSE)
 
 **[Project page](https://liu-x27.github.io/mini-claude-code/)** · [The gate](#the-risk-gate) · [Evidence](#what-it-measures) · [Quickstart](#quickstart) · [How it works](#how-it-works) · [Measurements](docs/measurements.md)
 
@@ -954,3 +955,7 @@ actually checks.** Building the `llm` backend ran into two silent returns that n
 — a label word missing from the top-K, and a reasoning model spending its budget before
 answering — which is why `LlmJudge.probe()` asks a control question at startup and
 reports what the endpoint actually did.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
