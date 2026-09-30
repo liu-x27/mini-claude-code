@@ -291,6 +291,28 @@ await checkAsync("readOnly 预设拒绝 Bash/Write/Edit", async () => {
   if (!r3) throw new Error("Read 应该被放行");
 });
 
+await checkAsync("readOnly 预设：WebFetch 和 MCP 工具要问，不再默认放行；--allow 可以放行一个只读的 MCP 工具", async () => {
+  const asked: string[] = [];
+  const prompt = async (req: { toolName: string }) => {
+    asked.push(req.toolName);
+    return "deny" as const;
+  };
+  const perm = new PermissionSystem({ ...PermissionPresets.readOnly(), prompt });
+  const write = await perm.check({ toolName: "mcp__filesystem__write_file", input: { path: "x" }, description: "x" });
+  const fetch = await perm.check({ toolName: "WebFetch", input: { url: "https://example.com" }, description: "x" });
+  if (write || fetch) throw new Error("只读模式下 MCP 写工具或 WebFetch 被放行了");
+  if (asked.join(",") !== "mcp__filesystem__write_file,WebFetch") throw new Error(`问了: ${asked.join(",")}`);
+  const base = PermissionPresets.readOnly();
+  const withAllow = new PermissionSystem({
+    ...base,
+    rules: [...(base.rules ?? []), parseRule("mcp__filesystem__list_directory", "allow")],
+    prompt,
+  });
+  if (!(await withAllow.check({ toolName: "mcp__filesystem__list_directory", input: { path: "." }, description: "x" }))) {
+    throw new Error("--allow 放行不了一个具体的 MCP 工具");
+  }
+});
+
 check("getContext() 返回规则副本", () => {
   const perm = new PermissionSystem(PermissionPresets.readOnly());
   const ctx1 = perm.getContext();

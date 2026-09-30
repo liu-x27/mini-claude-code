@@ -250,13 +250,21 @@ export const PermissionPresets = {
     ],
   }),
 
-  /** Read-only: allow reads, deny writes/shell */
+  /**
+   * Read-only: allow the built-in reads, deny the shell and file writes, and
+   * ask before WebFetch and every MCP tool. Both used to run unasked here: an
+   * MCP server's write_file or move_file ran under "read-only" with no prompt,
+   * and WebFetch left the same path from a secret on disk to any server that
+   * askDangerous closes. With nobody to ask, as under -p, asking is denying.
+   */
   readOnly: (): Partial<PermissionContext> => ({
     defaultMode: "allow",
     rules: [
       { tool: "Bash", mode: "deny" },
       { tool: "Write", mode: "deny" },
       { tool: "Edit", mode: "deny" },
+      { tool: "WebFetch", mode: "ask" },
+      { tool: "mcp__*", mode: "ask" },
     ],
   }),
 };

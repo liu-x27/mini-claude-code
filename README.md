@@ -224,7 +224,10 @@ none, and the tool's description tells the model which (`AGENT_SHELL` names anot
 Output that is not UTF-8 is decoded with the console's code page, line by line.
 
 **Permissions** (`src/permissions/`) resolve each call to `allow`, `ask`, or `deny`, with
-presets for read-only and ask-before-dangerous (Bash, Write, Edit and WebFetch). Rules use
+presets for ask-before-dangerous (Bash, Write, Edit, WebFetch and every MCP tool) and
+read-only (Bash, Write and Edit denied; WebFetch and MCP tools asked about, which under
+`-p`, with nobody to ask, means refused). Read-only used to let both run unasked, so an
+MCP server's `write_file` ran under it without a prompt. Rules use
 Claude Code's syntax — `Bash(npm test *)`, `Read(~/.ssh/**)` (which covers Glob and Grep
 too), `Edit(src/**)` (and Write), `WebFetch(domain:docs.python.org)` — through `parseRule`
 or `--allow` / `--deny`. A matching deny always wins; otherwise the most specific rule
