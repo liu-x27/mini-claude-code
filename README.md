@@ -277,11 +277,29 @@ reported and left out. Tools a server marks `readOnlyHint` run alongside others,
 alone and in order, and the ask preset asks before any `mcp__` tool until a rule allows
 it. The stdio path is exercised in the mock suite against a two-tool server in
 `examples/fixtures/`. Both transports have also been run against the official reference
-servers, with the configs in `examples/mcp/`: `server-filesystem` over stdio, limited to
-`docs/`, gave 14 tools, ten of them marked read-only, and listed the directory; and
-`server-everything` over streamable HTTP (started with
-`PORT=3030 npx -y @modelcontextprotocol/server-everything streamableHttp`) gave 13 tools
-and echoed a message back.
+servers, with the configs in `examples/mcp/`: `server-filesystem` over stdio gave 14
+tools, ten of them marked read-only, and `server-everything` over streamable HTTP
+(started with `PORT=3030 npx -y @modelcontextprotocol/server-everything streamableHttp`)
+gave 13 tools and echoed a message back. With `qwen3:4b` on the other end, behind
+`ANTHROPIC_BASE_URL`, the model answered from one MCP call in three runs of three
+(output abridged):
+
+```bash
+npm run -s cli -- -p "Which file in docs/ is the largest? Use the filesystem MCP tools." \
+  --mcp-config examples/mcp/filesystem.json --allow "mcp__filesystem__list_*" \
+  --output-format stream-json | grep -E '"type":"(tool_request|tool_denied|result)"'
+```
+
+```
+{"type":"tool_request","toolUseId":"call_zs8fcxs2","toolName":"mcp__filesystem__list_directory_with_sizes","input":{"path":"docs","sortBy":"size"},"summary":"path=docs sortBy=size"}
+{"type":"result","subtype":"success",…,"result":"The largest file in the `docs/` directory is **snake-arena.gif** (2.34 MB).",…,"num_turns":2,"tool_calls":1,…}
+```
+
+The `--allow` rule lets the listing tools through and nothing else; a headless run refuses
+the rest and says so on stderr. The first two runs, with `qwen3:14b` and the server rooted
+at `docs/`, took several tries: the model's `docs/` resolved to `docs/docs`, and it asked
+for `search_files` and `get_file_info`, which the rule refused. The config now roots the
+server at the project.
 
 **Hooks** (`src/hooks/`) take Claude Code's format — the same settings JSON, the same
 input on stdin, exit code 2 to block, the same JSON answers — so its hook scripts run here

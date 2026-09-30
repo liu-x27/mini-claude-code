@@ -134,8 +134,12 @@ class McpTool extends Tool {
       : { type: "success", output: text || "(no output)" };
   }
 
+  /** `path=docs sortBy=size`: the arguments as a person would read them, not as JSON. */
   override summarize(input: Record<string, unknown>): string {
-    return JSON.stringify(input).slice(0, 80);
+    return Object.entries(input)
+      .map(([key, value]) => `${key}=${typeof value === "string" ? value : JSON.stringify(value)}`)
+      .join(" ")
+      .slice(0, 80);
   }
 }
 

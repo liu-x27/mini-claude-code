@@ -1920,6 +1920,9 @@ await checkAsync("MCP：连上 stdio 服务，工具成为 mcp__服务__工具�
     const fail = mcp.tools.find((t) => t.name.endsWith("fail"))!;
     if (shout.dangerous || !fail.dangerous) throw new Error("readOnlyHint 的工具应可并行，其余按危险处理");
     if (mcp.failures.length !== 1 || mcp.failures[0]!.server !== "missing") throw new Error(`失败列表: ${JSON.stringify(mcp.failures)}`);
+    // 摘要是给人看的参数，不是 JSON
+    const summary = shout.summarize({ text: "hello", times: 2 } as never);
+    if (summary !== "text=hello times=2") throw new Error(`MCP 工具的摘要: ${summary}`);
 
     let asked = 0;
     const client = new ScriptedClient([
