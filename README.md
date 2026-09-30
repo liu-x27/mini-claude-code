@@ -276,7 +276,12 @@ command to spawn over stdio, or a streamable-HTTP URL — and wraps each server'
 reported and left out. Tools a server marks `readOnlyHint` run alongside others, the rest
 alone and in order, and the ask preset asks before any `mcp__` tool until a rule allows
 it. The stdio path is exercised in the mock suite against a two-tool server in
-`examples/fixtures/`, and live from the CLI; the HTTP transport is not yet.
+`examples/fixtures/`. Both transports have also been run against the official reference
+servers, with the configs in `examples/mcp/`: `server-filesystem` over stdio, limited to
+`docs/`, gave 14 tools, ten of them marked read-only, and listed the directory; and
+`server-everything` over streamable HTTP (started with
+`PORT=3030 npx -y @modelcontextprotocol/server-everything streamableHttp`) gave 13 tools
+and echoed a message back.
 
 **Hooks** (`src/hooks/`) take Claude Code's format — the same settings JSON, the same
 input on stdin, exit code 2 to block, the same JSON answers — so its hook scripts run here
