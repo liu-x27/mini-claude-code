@@ -7,6 +7,18 @@ registry, a permission system, and session persistence — with four ways to dri
 terminal REPL (or `-p`, with JSON output for scripts), a web UI, the Agent Client
 Protocol for an editor, and a library API.
 
+![One session in the web UI: a task list, a subagent, one command the risk gate clears and one it holds](docs/session.gif)
+
+A real session, recorded from the web UI by `docs/capture-session.mjs`: `qwen3:14b` on a
+local Ollama drives the loop, `llama3.1:8b` is the judge, and 143 seconds play at 6×. The
+model writes a task list and hands a lookup to a subagent, which reads one file and
+answers that the gate scores Bash only, quoting the line that says so. It runs `wc -l src/agent.ts`, which the gate clears with all four answers
+under 0.20, and asks for `rm -rf dist`, which the gate holds at 0.993 and which is denied.
+The clip stops as the model starts its reply; that reply said the call was blocked, left
+the item open, and less usefully suggested checking the directory's permissions. It is
+the fourth of five takes. The first found the defect described under
+[Status](#status), and in two of the others the model marked the denied item done anyway.
+
 It is deliberately not a wrapper around someone else's agent SDK. The loop, the tool
 protocol, and the permission model are all in `src/`, about 5,300 lines of TypeScript.
 
@@ -273,6 +285,21 @@ hook's allow never outweighs a deny rule, and a hook that crashes or times out i
 and ignored rather than blocking. XavierJev's own Claude Code server works as a
 `PermissionRequest` hook without a change: pointed at it with `--gate` off, the CLI had
 `wc -l src/agent.ts` cleared at P=0.074 and asked nothing.
+
+`examples/hooks/` is one such hook, ten lines, that blocks any `git push`. Run headless with
+`qwen3:14b` behind `ANTHROPIC_BASE_URL`, the call is refused before it reaches the
+permission system (output abridged):
+
+```bash
+npm run -s cli -- -p "Run exactly: git push origin main" --hooks examples/hooks/settings.json \
+  --output-format stream-json | grep -E '"type":"(tool_request|tool_denied|result)"'
+```
+
+```
+{"type":"tool_request","toolUseId":"call_senkxu6g","toolName":"Bash","input":{…,"command":"git push origin main"},"summary":"git push origin main"}
+{"type":"tool_denied","toolUseId":"call_senkxu6g","toolName":"Bash","reason":"blocked by hook"}
+{"type":"result","subtype":"success",…,"result":"The push action is blocked by a repository rule to prevent automated pushes. However, I can show you the current status of your repository and what changes are ready to be pushed. …"}
+```
 
 **Sessions** (`src/session/`) are JSON transcripts under `~/.agent-app/sessions`, with
 token and cost totals. Passing `resumeSessionId` replays one into the next run. They are
@@ -824,10 +851,19 @@ the judge on another: `wc -l src/agent.ts` cleared at P=0.074 without a prompt,
 both directions including the keyboard deny, and is **not** in the mock suite: it needs a
 live server, a live model and a live judge.
 
-The web UI's task list, compaction note and subagent lines have been checked only
-against a stand-in Messages endpoint that makes those calls on cue, since `llama3.1:8b`
-does not make them reliably: asked to hand work to a subagent, it twice wrote the Task
-call out as text instead.
+The web UI's task list and subagent lines have been seen live with `qwen3:14b`, which
+makes Task and TodoWrite calls where `llama3.1:8b` wrote them out as text. The compaction
+note has only been checked against a stand-in Messages endpoint that reports a prompt
+past the budget on cue.
+
+Recording the session at the top found a defect no mock had. A declined call came back
+to the model as `Permission denied for tool: Bash`, which `qwen3:14b` read as a
+file-system error: denied `rm -rf dist`, its next call was
+`icacls dist /grant administrators:F`, which the gate held too, at P(outside-cwd)=0.679.
+A declined call now says it was declined by the user or a rule, that this is not a
+file-system error, and not to reach the same result another way. In the four takes
+after the change the model tried no workaround, though its reply could still suggest one
+to the user.
 
 One thing that came out of watching it. Having denied `rm -rf dist`, I asked for
 `rmdir /s /q dist` instead, and the judge deferred that too at 0.817 — a Windows command
