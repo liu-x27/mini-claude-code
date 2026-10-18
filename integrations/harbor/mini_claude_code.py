@@ -22,6 +22,9 @@ trajectory.json to the agent log directory. A run that stopped short (the turn
 limit, stuck, a full context window) is left to the verifier; a run that threw
 (the API failing after its retries) raises, so the trial counts as an error
 rather than as a task the harness failed.
+
+.github/workflows/terminal-bench.yml runs this on GitHub Actions, which has
+the Docker that Harbor needs; README.md says what it has measured.
 """
 
 from __future__ import annotations

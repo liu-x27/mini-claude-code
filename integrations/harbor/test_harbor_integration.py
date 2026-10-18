@@ -1,4 +1,4 @@
-"""Checks for the Harbor integration: the ATIF conversion and the adapter.
+"""Checks for the Harbor integration: the ATIF conversion, the matrix, the scrub, the summary, and the adapter.
 
     python -m unittest discover -s integrations/harbor -t . -p "test_*.py" -v
 
@@ -11,13 +11,17 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from integrations.harbor import atif
+from integrations.harbor import atif, summarize
+
+HERE = Path(__file__).resolve().parent
 
 try:
     from harbor.models.trajectories import Trajectory
@@ -121,6 +125,96 @@ class AtifTest(unittest.TestCase):
         self.assertEqual((total["input_tokens"], total["cache_read_input_tokens"]), (12, 5))
         self.assertNotEqual(source, "result")
         self.assertEqual(len(atif.turn_usages([turn, sub])), 1)
+
+
+class ScriptsTest(unittest.TestCase):
+    def test_plan_expands_agents_tasks_and_attempts(self):
+        registry = [
+            {"name": "terminal-bench", "version": "2.0", "tasks": [{"name": n} for n in ("a", "b", "c")]},
+            {"name": "terminal-bench-sample", "version": "2.0", "tasks": [{"name": "b"}]},
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "registry.json"
+            path.write_text(json.dumps(registry))
+            run = lambda *a: subprocess.run(
+                [sys.executable, str(HERE / "plan.py"), "--registry-url", path.as_uri(), *a],
+                capture_output=True, text=True,
+            )
+            done = run("--agents", "oracle, terminus-2", "--tasks", "sample", "--attempts", "2")
+            self.assertEqual(done.returncode, 0, done.stderr)
+            ids = [m["id"] for m in json.loads(done.stdout)]
+            self.assertEqual(ids, ["oracle__b__1", "oracle__b__2", "terminus-2__b__1", "terminus-2__b__2"])
+            self.assertNotEqual(run("--agents", "oracle", "--tasks", "a nope").returncode, 0)
+            self.assertNotEqual(run("--agents", "claude-code", "--tasks", "all").returncode, 0)
+
+    def test_scrub_redacts_text_and_deletes_binaries(self):
+        secret = "sk-api-THIS-IS-NOT-A-REAL-KEY-0123456789"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "agent").mkdir()
+            (root / "agent" / "events.jsonl").write_text(f'{{"output": "ANTHROPIC_API_KEY={secret}"}}\n')
+            (root / "agent" / "blob.bin").write_bytes(b"\xff\xfe" + secret.encode())
+            (root / "clean.txt").write_text("nothing here")
+            outside = Path(tmp + "-outside")
+            outside.write_text("a file of the runner")
+            try:
+                (root / "agent" / "link").symlink_to(outside)
+                linked = True
+            except OSError:  # Windows without the right to make symbolic links
+                linked = False
+            done = subprocess.run(
+                [sys.executable, str(HERE / "scrub.py"), str(root)],
+                capture_output=True, text=True, env={**os.environ, "SECRET": secret},
+            )
+            self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+            self.assertNotIn(secret, done.stdout + done.stderr)
+            self.assertIn("[REDACTED]", (root / "agent" / "events.jsonl").read_text())
+            self.assertFalse((root / "agent" / "blob.bin").exists())
+            self.assertEqual((root / "clean.txt").read_text(), "nothing here")
+            if linked:
+                self.assertFalse((root / "agent" / "link").is_symlink())
+                self.assertTrue(outside.exists())  # the link goes, not what it named
+            outside.unlink()
+
+    def test_summary_scores_by_task_and_names_what_is_missing(self):
+        def trial(job, agent, task, reward, exception=None, tokens=(1000, 800, 50)):
+            return {
+                "trial_name": f"{task}__x", "task_name": task, "agent_info": {"name": agent, "version": "1"},
+                "verifier_result": {"rewards": {"reward": reward}},
+                "exception_info": {"exception_type": exception} if exception else None,
+                "agent_result": {"n_input_tokens": tokens[0], "n_cache_tokens": tokens[1], "n_output_tokens": tokens[2]},
+            }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for job, agent, task, reward, exc in [
+                ("terminus-2__a__1", "terminus-2", "a", 1, None),
+                ("terminus-2__a__2", "terminus-2", "a", 0, "AgentTimeoutError"),
+                ("terminus-2__b__1", "terminus-2", "b", 0, None),
+                ("mini-claude-code__a__1", "mini-claude-code", "a", 1, None),
+                ("mini-claude-code__b__1", "mini-claude-code", "b", 1, "ApiRateLimitError"),
+            ]:
+                (root / job / "t").mkdir(parents=True)
+                (root / job / "t" / "result.json").write_text(json.dumps(trial(job, agent, task, reward, exc)))
+            (root / "terminus-2__a__1" / "result.json").write_text(json.dumps({"n_total_trials": 1}))
+            trials = summarize.load_trials(root)
+            self.assertEqual(len(trials), 5)
+            markdown, data = summarize.summarize(trials, (2.1, 8.4, 0.42, 2.625), "CNY")
+            # terminus-2: task a 1/2, task b 0/1 -> mean over tasks 25%.
+            self.assertAlmostEqual(data["agents"]["terminus-2"]["score"], 0.25)
+            self.assertEqual(data["agents"]["mini-claude-code"]["categories"], {"passed": 1, "passed, with ApiRateLimitError": 1})
+            # 1000 input tokens of which 800 cached: 200 at the input price.
+            self.assertAlmostEqual(trials[0]["est_cost"], (200 * 2.1 + 800 * 0.42 + 50 * 8.4) / 1e6)
+            self.assertIn("| a | 1/1 | 1/2 T |", markdown)
+            self.assertIn("| b | 1/1 E | 0/1 |", markdown)
+            planned = Path(tmp) / "planned.json"
+            planned.write_text(json.dumps([{"id": "terminus-2__a__1"}, {"id": "terminus-2__c__1"}]))
+            done = subprocess.run(
+                [sys.executable, str(HERE / "summarize.py"), str(root), "--expect", str(planned)],
+                capture_output=True, text=True,
+            )
+            self.assertEqual(done.returncode, 1)
+            self.assertIn("terminus-2__c__1", done.stdout)
 
 
 @unittest.skipUnless(HAVE_HARBOR, "Harbor is not installed")
