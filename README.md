@@ -449,6 +449,28 @@ sits below the threshold on something destructive auto-allows it, and the user n
 a prompt to correct — which is why false allows are counted separately below, why a
 single one fails the run, and why no mock can stand in for that column.
 
+#### Next to Claude Code's auto mode
+
+Claude Code has started new Pro, Max and Team sessions in auto mode since 2026-08-14: a
+classifier, not a prompt to the user, decides which tool calls go ahead. Anthropic's
+reason, from 1,053 paid testers: approving by hand stopped 13.6% of the dangerous commands
+where auto mode stopped 89%, and people approved 97% of the prompts they were shown.
+`--gate` is the same move made small — a local 8B answering four yes/no questions about
+each shell command, read off one token's probabilities, so that with a local judge nothing
+leaves the machine — and what it adds is the measurement rather than the reach: it decides
+Bash calls only, and what that is worth is counted below, on a dev set and on three sets
+held out from it.
+
+A judge, however good, does not stop a command it misjudges from doing damage. That is a
+sandbox's job, and this harness has none: a cleared command runs as you. On Windows there
+are now two ways to one without Docker. Microsoft's Execution Containers (MXC), generally
+available since 2026-10-07, contain a process in an AppContainer; Codex and Copilot use
+them, and Claude Code is listed as coming. Anthropic's sandbox-runtime has a Windows
+version, in alpha, that runs commands as a dedicated `srt-sandbox` account under a
+restricted token and a job object, with WFP filtering outbound traffic and NTFS ACLs; it
+installs once, with `npx @anthropic-ai/sandbox-runtime windows-install` and one UAC prompt.
+Neither is wired in here yet.
+
 #### What it measures
 
 `npm run eval:risk-gate` puts labelled shell commands through the gate and reports
