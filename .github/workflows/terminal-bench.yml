@@ -55,7 +55,7 @@ env:
 
 jobs:
   plan:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
       paid: ${{ steps.plan.outputs.paid }}
@@ -81,7 +81,7 @@ jobs:
   preflight:
     # The adapter under the pinned Harbor, before any trial starts; for a paid run, also the key.
     needs: plan
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v7
@@ -109,7 +109,9 @@ jobs:
   trial:
     needs: [plan, preflight]
     name: ${{ matrix.id }}
-    runs-on: ubuntu-latest
+    # Pinned, not ubuntu-latest: that label moves to Ubuntu 26 from 2026-10-19, and the trials of one
+    # comparison should not run on two images.
+    runs-on: ubuntu-24.04
     # The longest task gives the agent 12000 s; the job also builds, installs and verifies.
     timeout-minutes: 300
     strategy:
@@ -187,7 +189,7 @@ jobs:
   summary:
     needs: [plan, trial]
     if: always() && needs.trial.result != 'skipped'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
       - uses: actions/download-artifact@v8
