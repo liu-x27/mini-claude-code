@@ -907,8 +907,13 @@ What the run did and did not control for:
   4,096 output tokens. This harness keeps its own 16,000 (more when a reply is cut off
   mid tool call) and is told the 1M window. It sends `thinking: {"type": "adaptive"}`, its
   default, which DeepSeek accepts and does not document; the other two send
-  none, which leaves DeepSeek's default, thinking on. Whether the two come to the same is
-  not known, and this harness's output per trial is about half the others'.
+  none, which leaves DeepSeek's default, thinking on. Sending none from this harness as
+  well (`AGENT_THINKING=omit`, the workflow's `thinking` input) did not raise its output:
+  [a second run](https://github.com/liu-x27/mini-claude-code/actions/runs/39177686519) of
+  the same tasks and attempts wrote 11k output tokens per trial against 13k, with 266k
+  input (257k cached), and passed 16 of 19, −5 points paired over tasks (−20 to +10); the
+  twentieth never started, as Docker was not running on its runner. So the thinking
+  parameter is not why this harness's output per trial is about half the others'.
 - **mini-swe-agent ran in its text-based mode.** Harbor's install leaves out the `mcp`
   package that today's LiteLLM imports, and in mini-swe-agent's tool-calling mode LiteLLM
   now marks its bash tool `"type": "custom"`, which DeepSeek's endpoint rejects.
@@ -916,7 +921,8 @@ What the run did and did not control for:
   `mini_textbased` configuration, which sends no tools.
 - **No retries**, so every token is in the count: Harbor deletes a retried attempt.
 - **Cost** is estimated from tokens at DeepSeek's off-peak list prices (CNY 1 per million
-  uncached input tokens, 0.02 cached, 4 output); the 60 trials came to about CNY 6.5.
+  uncached input tokens, 0.02 cached, 4 output); the 60 trials came to about CNY 6.5, and
+  the second run's 19 to about CNY 1.1.
 
 Not run yet: more tasks or attempts, which telling the three apart needs; other models
 (MiniMax-M2.7 is wired in as a second provider); Harbor's claude-code agent as a fourth
