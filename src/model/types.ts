@@ -16,7 +16,8 @@ export interface ModelRequest {
   messages: Anthropic.MessageParam[];
   tools: Tool[];
   maxTokens: number;
-  thinking: ThinkingConfig;
+  /** null: not sent, so the model's own default applies. */
+  thinking: ThinkingConfig | null;
   /** "none" asks for text only while still declaring the tools, as a compaction does. Default "auto". */
   toolChoice?: "auto" | "none" | undefined;
   /** Sent only when set; see `AgentConfig.effort`. */

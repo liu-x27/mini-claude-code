@@ -232,8 +232,13 @@ export interface AgentConfig {
   /** Max output tokens per API call */
   maxTokens?: number;
 
-  /** Thinking configuration */
-  thinking?: ThinkingConfig;
+  /**
+   * The `thinking` parameter every request sends. Unset, it is the one
+   * `AGENT_THINKING` names (adaptive, enabled, disabled or omit), and
+   * `{ type: "adaptive" }` when that is unset too. `null` sends none, which
+   * leaves the model its own default.
+   */
+  thinking?: ThinkingConfig | null;
 
   /**
    * Sent as `output_config.effort` when set; omitted otherwise, so the model's

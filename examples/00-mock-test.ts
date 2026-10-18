@@ -2077,15 +2077,17 @@ await checkAsync("工具事件带着工具自己的一行摘要；未知工具�
   if (events.some((e) => e.type === "tool_start" && e.toolUseId !== "s1")) throw new Error("不该执行的调用执行了");
 });
 
-await checkAsync("CLI -p 的 json / stream-json：stdout 只有 JSON；退出码说明结局；没人可问时拒绝并在 stderr 说明", async () => {
-  // 一个会流式回答的假 Messages 端点：第一次要调 Bash，看到工具结果后说 done
+await checkAsync("CLI -p 的 json / stream-json：stdout 只有 JSON；退出码说明结局；没人可问时拒绝并在 stderr 说明；AGENT_THINKING=omit 的请求不带 thinking", async () => {
+  // 一个会流式回答的假 Messages 端点：第一次要调 Bash，看到工具结果后说 done；收到的请求体都记下来
   const sse = (events: Array<[string, Record<string, unknown>]>) =>
     events.map(([event, data]) => `event: ${event}\ndata: ${JSON.stringify({ type: event, ...data })}\n\n`).join("");
   const opening = { message: { id: "msg", type: "message", role: "assistant", model: "fake", content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 12, output_tokens: 1 } } };
+  const bodies: Array<{ thinking?: { type?: string } }> = [];
   const fake = http.createServer((req, res) => {
     let raw = "";
     req.on("data", (d) => (raw += d));
     req.on("end", () => {
+      bodies.push(JSON.parse(raw) as { thinking?: { type?: string } });
       const answered = raw.includes("tool_result");
       res.writeHead(200, { "content-type": "text/event-stream" });
       res.end(
@@ -2113,11 +2115,11 @@ await checkAsync("CLI -p 的 json / stream-json：stdout 只有 JSON；退出码
   });
   await new Promise<void>((r) => fake.listen(0, "127.0.0.1", r));
   const { port } = fake.address() as { port: number };
-  const cli = (args: string[]) =>
+  const cli = (args: string[], env: Record<string, string> = {}) =>
     new Promise<{ code: number | null; out: string; err: string }>((resolve) => {
       const child = spawn(process.execPath, [path.join(REPO_ROOT, "node_modules", "tsx", "dist", "cli.mjs"), path.join(REPO_ROOT, "cli", "index.ts"), ...args], {
         cwd: REPO_ROOT,
-        env: { ...process.env, ANTHROPIC_API_KEY: "test", ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}`, AGENT_SESSION_DIR: path.join(scratch, "cli-sessions"), AGENT_LOG_LEVEL: "" },
+        env: { ...process.env, ANTHROPIC_API_KEY: "test", ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}`, AGENT_SESSION_DIR: path.join(scratch, "cli-sessions"), AGENT_LOG_LEVEL: "", AGENT_THINKING: "", ...env },
         stdio: ["ignore", "pipe", "pipe"],
       });
       let out = "";
@@ -2140,6 +2142,14 @@ await checkAsync("CLI -p 的 json / stream-json：stdout 只有 JSON；退出码
     const only = denied.out.trim().split("\n");
     if (only.length !== 1 || (JSON.parse(only[0]!) as { type?: string }).type !== "result") throw new Error(`json 模式应只有一行结果: ${denied.out}`);
     if (!denied.err.includes("cannot ask")) throw new Error(`stderr 没说明为什么拒绝: ${denied.err.slice(0, 300)}`);
+
+    // Harbor 适配器的 thinking=omit 就是设这个环境变量：之后的请求体里不该再有 thinking 字段
+    const sent = bodies.splice(0).map((b) => b.thinking?.type ?? "none");
+    if (sent.length < 4 || sent.some((t) => t !== "adaptive")) throw new Error(`默认的 thinking: ${sent.join(",")}`);
+    const omitted = await cli(["-p", "go", "--model", "fake", "--output-format", "json", "--allow", "Bash(echo *)"], { AGENT_THINKING: "omit" });
+    if (omitted.code !== 0 || bodies.length !== 2 || bodies.some((b) => "thinking" in b)) {
+      throw new Error(`AGENT_THINKING=omit：退出码 ${omitted.code}，请求体 ${JSON.stringify(bodies)}`);
+    }
   } finally {
     fake.closeAllConnections();
     await new Promise((r) => fake.close(r));
@@ -2464,6 +2474,58 @@ await checkAsync("effort：设了才发 output_config.effort，没设就不发",
   const client = new ScriptedClient([async (req) => ((sent = req.effort), said("ok"))]);
   await scriptedAgent(client, { effort: "xhigh" }).agent.run("go");
   if (sent !== "xhigh") throw new Error(`Agent 发给客户端的 effort: ${sent}`);
+});
+
+await checkAsync("thinking：默认 adaptive；AGENT_THINKING 可换成 enabled / disabled / omit，omit 就不发；拼错报错", async () => {
+  const base: ModelRequest = {
+    model: "deepseek-flash",
+    system: "s",
+    messages: [{ role: "user", content: "hi" }],
+    tools: [],
+    maxTokens: 100,
+    thinking: { type: "adaptive" },
+    enableCaching: false,
+    stream: false,
+  };
+  if (buildParams(base).thinking?.type !== "adaptive") throw new Error("adaptive 没发出去");
+  if ("thinking" in buildParams({ ...base, thinking: null })) throw new Error("null 也发了 thinking");
+
+  /** 在给定的 AGENT_THINKING 下跑一轮，返回 Agent 交给客户端的 thinking */
+  const sentWith = async (value: string | undefined, config: Omit<AgentConfig, "client"> = {}) => {
+    const saved = process.env.AGENT_THINKING;
+    if (value === undefined) delete process.env.AGENT_THINKING;
+    else process.env.AGENT_THINKING = value;
+    try {
+      let sent: ModelRequest["thinking"] | undefined;
+      const client = new ScriptedClient([async (req) => ((sent = req.thinking), said("ok"))]);
+      await scriptedAgent(client, config).agent.run("go");
+      return sent;
+    } finally {
+      if (saved === undefined) delete process.env.AGENT_THINKING;
+      else process.env.AGENT_THINKING = saved;
+    }
+  };
+  const cases: Array<[string | undefined, ModelRequest["thinking"]]> = [
+    [undefined, { type: "adaptive" }],
+    ["adaptive", { type: "adaptive" }],
+    [" Omit ", null],
+    ["disabled", { type: "disabled" }],
+    ["enabled", { type: "enabled", budget_tokens: 8000 }], // 默认 max_tokens 16,000 的一半
+  ];
+  for (const [value, want] of cases) {
+    const got = await sentWith(value);
+    if (JSON.stringify(got) !== JSON.stringify(want)) throw new Error(`AGENT_THINKING=${value}：发的是 ${JSON.stringify(got)}`);
+  }
+  // 配置里写明的优先于环境变量
+  if ((await sentWith("omit", { thinking: { type: "disabled" } }))?.type !== "disabled") throw new Error("配置没盖过环境变量");
+  if ((await sentWith(undefined, { thinking: null })) !== null) throw new Error("配置里的 null 没生效");
+  let threw = false;
+  try {
+    await sentWith("omitted");
+  } catch {
+    threw = true;
+  }
+  if (!threw) throw new Error("拼错的值悄悄用了默认");
 });
 
 await checkAsync("成本：没有价格的模型记为未知，不冒充 Opus 5 的价格", async () => {

@@ -31,6 +31,7 @@ import type {
   Session,
   SessionMetadata,
   StopJudge,
+  ThinkingConfig,
   ToolCallRecord,
   ToolContext,
   ToolResult,
@@ -123,7 +124,7 @@ export class Agent {
       cwd: config.cwd ?? process.cwd(),
       maxTurns: config.maxTurns ?? DEFAULT_MAX_TURNS,
       maxTokens: config.maxTokens ?? DEFAULT_MAX_TOKENS,
-      thinking: config.thinking ?? { type: "adaptive" },
+      thinking: config.thinking !== undefined ? config.thinking : thinkingFromEnv(config.maxTokens ?? DEFAULT_MAX_TOKENS),
       allowedTools: config.allowedTools ?? [],
       disallowedTools: config.disallowedTools ?? [],
       permissions: config.permissions ?? {},
@@ -1074,6 +1075,29 @@ function stopNotice(stopReason: string, maxTokens: number): string | undefined {
 
 function outputDir(): string {
   return process.env.AGENT_OUTPUT_DIR || path.join(os.tmpdir(), "agent-app-output");
+}
+
+/**
+ * The thinking parameter AGENT_THINKING names, for a run set up from outside, as a benchmark's is:
+ * adaptive (also what unset means), enabled (budget: half of max_tokens, which DeepSeek ignores),
+ * disabled, or omit, which sends none. Anything else throws: a misspelt value that fell back to
+ * the default would measure the wrong thing without saying so.
+ */
+function thinkingFromEnv(maxTokens: number): ThinkingConfig | null {
+  const value = process.env.AGENT_THINKING?.trim().toLowerCase() ?? "";
+  switch (value) {
+    case "":
+    case "adaptive":
+      return { type: "adaptive" };
+    case "enabled":
+      return { type: "enabled", budget_tokens: Math.floor(maxTokens / 2) };
+    case "disabled":
+      return { type: "disabled" };
+    case "omit":
+      return null;
+    default:
+      throw new Error(`AGENT_THINKING=${process.env.AGENT_THINKING}: expected adaptive, enabled, disabled or omit`);
+  }
 }
 
 function safeName(s: string): string {

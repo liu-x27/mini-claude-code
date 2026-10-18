@@ -85,7 +85,9 @@ export function buildParams(request: ModelRequest): Anthropic.MessageCreateParam
     messages: request.enableCaching
       ? withCacheBreakpoint(withoutForeignReasoning(request.messages))
       : withoutForeignReasoning(request.messages),
-    thinking: request.thinking as Anthropic.ThinkingConfigParam,
+    // Left out when null, which leaves the endpoint's default: DeepSeek documents only enabled
+    // and disabled, and thinks at effort high when told nothing.
+    ...(request.thinking ? { thinking: request.thinking as Anthropic.ThinkingConfigParam } : {}),
     // Only when asked for: a default here would override the model's own and
     // be rejected by the models and compatible endpoints that do not take it.
     ...(request.effort ? { output_config: { effort: request.effort } } : {}),
