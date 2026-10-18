@@ -176,6 +176,25 @@ class ScriptsTest(unittest.TestCase):
                 self.assertTrue(outside.exists())  # the link goes, not what it named
             outside.unlink()
 
+    def test_scrub_takes_every_key_it_is_given(self):
+        one, two = "sk-api-NOT-A-REAL-KEY-aaaaaaaaaa", "sk-NOT-A-REAL-KEY-bbbbbbbbbb"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "log.txt").write_text(f"first {one} second {two}\n")
+            done = subprocess.run(
+                [sys.executable, str(HERE / "scrub.py"), str(root)],
+                capture_output=True, text=True, env={**os.environ, "SECRET": one, "SECRET_2": two},
+            )
+            self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+            self.assertEqual((root / "log.txt").read_text(), "first [REDACTED] second [REDACTED]\n")
+
+    def test_deepseek_peak_hours_cost_double(self):
+        # 2026-10-19 is a Monday: 02:00 UTC is 10:00 in Beijing (peak), 04:30 UTC is 12:30 (off-peak).
+        self.assertEqual(summarize.peak_factor("2026-10-19T02:00:00Z", "deepseek"), 2.0)
+        self.assertEqual(summarize.peak_factor("2026-10-19T04:30:00+00:00", "deepseek"), 1.0)
+        self.assertEqual(summarize.peak_factor("2026-10-18T02:00:00Z", "deepseek"), 1.0)  # a Sunday
+        self.assertEqual(summarize.peak_factor("2026-10-19T02:00:00Z", "none"), 1.0)
+
     def test_summary_scores_by_task_and_names_what_is_missing(self):
         def trial(job, agent, task, reward, exception=None, tokens=(1000, 800, 50)):
             return {

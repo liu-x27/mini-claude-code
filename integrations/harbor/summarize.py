@@ -10,7 +10,8 @@ The score counts a trial's reward as the verifier gave it, an errored trial
 included: Harbor verifies after a timeout or an agent error too. Its 95%
 interval resamples tasks, not trials, since attempts at one task are not
 independent. Cost is estimated from tokens at the given prices; cache writes
-are priced as input for harnesses that do not report them separately.
+are priced as input for harnesses that do not report them separately, and
+with --peak deepseek a trial that started in DeepSeek's peak hours costs double.
 Standard library only.
 """
 
@@ -22,6 +23,7 @@ import random
 import statistics
 import sys
 from collections import Counter, defaultdict
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -75,6 +77,7 @@ def _row(result: dict[str, Any], job: str, trial_dir: Path | None = None) -> dic
         "stop_reason": metadata.get("stop_reason"),
         "agent_seconds": _seconds(result.get("agent_execution")),
         "trial_seconds": _seconds({"started_at": result.get("started_at"), "finished_at": result.get("finished_at")}),
+        "started_at": (result.get("agent_execution") or {}).get("started_at") or result.get("started_at"),
         "version": (result.get("agent_info") or {}).get("version"),
     }
 
@@ -111,8 +114,6 @@ def _tail(path: Path, lines: int = 15, chars: int = 1500) -> str | None:
 
 
 def _seconds(timing: Any) -> float | None:
-    from datetime import datetime
-
     if not isinstance(timing, dict) or not timing.get("started_at") or not timing.get("finished_at"):
         return None
     try:
@@ -123,7 +124,7 @@ def _seconds(timing: Any) -> float | None:
     return (end - start).total_seconds()
 
 
-def cost(row: dict[str, Any], prices: tuple[float, float, float, float] | None) -> float | None:
+def cost(row: dict[str, Any], prices: tuple[float, float, float, float] | None, peak: str | None = None) -> float | None:
     """Estimated cost of one trial, in the prices' currency (per million tokens: input, output, cache read, cache write)."""
     if prices is None or row["input_tokens"] is None or row["output_tokens"] is None:
         return None
@@ -131,7 +132,25 @@ def cost(row: dict[str, Any], prices: tuple[float, float, float, float] | None) 
     cached = row["cached_tokens"] or 0
     written = row["cache_write_tokens"] or 0
     uncached = max(row["input_tokens"] - cached - written, 0)
-    return (uncached * p_in + cached * p_read + written * p_write + row["output_tokens"] * p_out) / 1e6
+    base = (uncached * p_in + cached * p_read + written * p_write + row["output_tokens"] * p_out) / 1e6
+    return base * peak_factor(row.get("started_at"), peak)
+
+
+def peak_factor(started_at: Any, peak: str | None) -> float:
+    """DeepSeek's prices double on weekdays 09:00-12:00 and 14:00-18:00 Beijing time, by when the agent started.
+
+    Chinese public holidays are off-peak too, and not known here, so a trial on one is overcounted.
+    """
+    if peak != "deepseek" or not started_at:
+        return 1.0
+    try:
+        start = datetime.fromisoformat(str(started_at).replace("Z", "+00:00"))
+    except ValueError:
+        return 1.0
+    if start.tzinfo is None:
+        start = start.replace(tzinfo=timezone.utc)
+    beijing = start.astimezone(timezone(timedelta(hours=8)))
+    return 2.0 if beijing.weekday() < 5 and (9 <= beijing.hour < 12 or 14 <= beijing.hour < 18) else 1.0
 
 
 def by_task(rows: list[dict[str, Any]]) -> dict[str, float]:
@@ -150,7 +169,7 @@ def bootstrap(values: list[float], n: int = 10_000, seed: int = 0) -> tuple[floa
     return means[int(0.025 * n)], means[int(0.975 * n) - 1]
 
 
-def summarize(trials: list[dict[str, Any]], prices, currency: str) -> tuple[str, dict[str, Any]]:
+def summarize(trials: list[dict[str, Any]], prices, currency: str, peak: str | None = None) -> tuple[str, dict[str, Any]]:
     agents = sorted({t["agent"] for t in trials}, key=lambda a: (ORDER.index(a) if a in ORDER else len(ORDER), a))
     tasks = sorted({t["task"] for t in trials})
     out: list[str] = []
@@ -164,7 +183,7 @@ def summarize(trials: list[dict[str, Any]], prices, currency: str) -> tuple[str,
         per_task = by_task(rows)
         score = sum(per_task.values()) / len(per_task)
         low, high = bootstrap(list(per_task.values()))
-        costs = [c for c in (cost(r, prices) for r in rows) if c is not None]
+        costs = [c for c in (cost(r, prices, peak) for r in rows) if c is not None]
         inputs = [r["input_tokens"] for r in rows if r["input_tokens"] is not None]
         cached = [r["cached_tokens"] or 0 for r in rows if r["input_tokens"] is not None]
         outputs = [r["output_tokens"] for r in rows if r["output_tokens"] is not None]
@@ -247,7 +266,7 @@ def summarize(trials: list[dict[str, Any]], prices, currency: str) -> tuple[str,
             out.append(f"<details><summary>{row['job']}: {row['category']}</summary>\n\n```\n{body or '(no test output)'}\n```\n</details>")
 
     for row in trials:
-        row["est_cost"] = cost(row, prices)
+        row["est_cost"] = cost(row, prices, peak)
     return "\n".join(out) + "\n", {"currency": currency, "prices_per_million": prices, "agents": aggregates, "trials": trials}
 
 
@@ -278,6 +297,7 @@ def main() -> int:
     parser.add_argument("root", type=Path)
     parser.add_argument("--prices", help="per million tokens: input,output,cache_read,cache_write")
     parser.add_argument("--currency", default="CNY")
+    parser.add_argument("--peak", help='"deepseek": double the prices for a trial started in its peak hours')
     parser.add_argument("--json", type=Path, help="also write every trial and aggregate here")
     parser.add_argument("--expect", type=Path, help="the planned matrix (plan.py's output): name the trials with no result")
     args = parser.parse_args()
@@ -298,7 +318,7 @@ def main() -> int:
     if not trials:
         print("No trial results found.")
         return 1
-    markdown, data = summarize(trials, prices, args.currency)
+    markdown, data = summarize(trials, prices, args.currency, args.peak)
     data["missing"] = missing
     print(markdown)
     if args.json:

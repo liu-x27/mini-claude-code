@@ -2,8 +2,8 @@ name: terminal-bench
 
 # Terminal-Bench 2.0 through Harbor, started by hand only. The oracle runs each task's own solution:
 # no key, no cost beyond runner time, and it proves a task can pass on this runner at all. Any other
-# agent calls the model behind the MINIMAX_API_KEY secret, which costs money; nothing here runs on a
-# push, a pull request or a schedule.
+# agent calls the model behind the chosen provider's key, a repository secret (DEEPSEEK_API_KEY or
+# MINIMAX_API_KEY), which costs money; nothing here runs on a push, a pull request or a schedule.
 on:
   workflow_dispatch:
     inputs:
@@ -20,9 +20,14 @@ on:
         description: Install the agents and stop, with no model call and no verifier
         type: boolean
         default: false
+      provider:
+        description: The Anthropic-compatible endpoint the three harnesses share
+        type: choice
+        options: [deepseek, minimax]
+        default: deepseek
       model:
-        description: The model behind the endpoint, for the three harnesses
-        default: MiniMax-M2.7
+        description: "The model behind it; empty means deepseek-flash on deepseek, MiniMax-M2.7 on minimax"
+        default: ""
       max_parallel:
         description: Trials at once (a free account runs 20 jobs at a time across all its repositories)
         default: "10"
@@ -50,11 +55,6 @@ env:
   # harbor-framework/terminal-bench-2 (69671fba, 2025-10-31): the tasks the public 2.0 board ran.
   # Harbor Hub's terminal-bench@2.0 resolves to the same commit; this way it cannot move.
   REGISTRY_URL: https://raw.githubusercontent.com/harbor-framework/harbor/b53b8134e1241686dca7759af188f987ecc48e8b/registry.json
-  # MiniMax's China-site Anthropic-compatible endpoint (the key is a China-site key: minimax.io refuses it).
-  ENDPOINT: https://api.minimaxi.com/anthropic
-  # MiniMax's list prices for MiniMax-M2.7, CNY per million tokens: input, output, cache read, cache
-  # write (platform.minimax.cn pricing, read 2026-10-18). Only the summary's cost estimate uses them.
-  PRICES: 2.1,8.4,0.42,2.625
 
 jobs:
   plan:
@@ -62,8 +62,42 @@ jobs:
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
       paid: ${{ steps.plan.outputs.paid }}
+      provider: ${{ steps.provider.outputs.provider }}
+      endpoint: ${{ steps.provider.outputs.endpoint }}
+      model: ${{ steps.provider.outputs.model }}
+      window: ${{ steps.provider.outputs.window }}
+      prices: ${{ steps.provider.outputs.prices }}
+      peak: ${{ steps.provider.outputs.peak }}
     steps:
       - uses: actions/checkout@v5
+      - id: provider
+        env:
+          PROVIDER: ${{ inputs.provider }}
+          MODEL: ${{ inputs.model }}
+        run: |
+          # Prices are each provider's list prices in CNY per million tokens: input, output, cache read,
+          # cache write (read 2026-10-18). Only the summary's cost estimate uses them.
+          case "$PROVIDER" in
+            deepseek)
+              # DeepSeek's own docs: deepseek-flash is DeepSeek-V4.1-Flash-1017, 1M context, thinking on by
+              # default. A cache write costs what a miss does. Off-peak prices; weekdays 09:00-12:00 and
+              # 14:00-18:00 Beijing time cost twice as much, which the summary applies by start time.
+              echo "endpoint=https://api.deepseek.com/anthropic" >> "$GITHUB_OUTPUT"
+              echo "model=${MODEL:-deepseek-flash}" >> "$GITHUB_OUTPUT"
+              echo "window=1000000" >> "$GITHUB_OUTPUT"
+              echo "prices=1,4,0.02,1" >> "$GITHUB_OUTPUT"
+              echo "peak=deepseek" >> "$GITHUB_OUTPUT" ;;
+            minimax)
+              # MiniMax's China-site endpoint: the key is a China-site key, which minimax.io refuses.
+              echo "endpoint=https://api.minimaxi.com/anthropic" >> "$GITHUB_OUTPUT"
+              echo "model=${MODEL:-MiniMax-M2.7}" >> "$GITHUB_OUTPUT"
+              echo "window=204800" >> "$GITHUB_OUTPUT"
+              echo "prices=2.1,8.4,0.42,2.625" >> "$GITHUB_OUTPUT"
+              echo "peak=none" >> "$GITHUB_OUTPUT" ;;
+            *)
+              echo "::error::Unknown provider $PROVIDER"; exit 1 ;;
+          esac
+          echo "provider=$PROVIDER" >> "$GITHUB_OUTPUT"
       - id: plan
         env:
           AGENTS: ${{ inputs.agents }}
@@ -71,6 +105,8 @@ jobs:
           ATTEMPTS: ${{ inputs.attempts }}
           INSTALL_ONLY: ${{ inputs.install_only }}
           PAID_TRIALS: ${{ inputs.paid_trials }}
+          PROVIDER: ${{ steps.provider.outputs.provider }}
+          MODEL: ${{ steps.provider.outputs.model }}
         run: |
           matrix=$(python3 integrations/harbor/plan.py --registry-url "$REGISTRY_URL" --dataset "$DATASET" \
             --agents "$AGENTS" --tasks "$TASKS" --attempts "$ATTEMPTS")
@@ -83,7 +119,7 @@ jobs:
           paid=false
           if [ "$calls" -gt 0 ]; then paid=true; fi
           echo "paid=$paid" >> "$GITHUB_OUTPUT"
-          echo "Trials: $(echo "$matrix" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))'); calling the model: $calls" >> "$GITHUB_STEP_SUMMARY"
+          echo "Trials: $(echo "$matrix" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))'); calling the model: $calls ($MODEL on $PROVIDER)" >> "$GITHUB_STEP_SUMMARY"
           # A form that came through with a box unticked or a field left over is one click from a paid run;
           # the person starting one has to know, and type, how many trials will spend money.
           if [ "$paid" = true ] && [ "$(echo "$PAID_TRIALS" | tr -d ' ')" != "$calls" ]; then
@@ -105,11 +141,14 @@ jobs:
       - name: The key answers on the endpoint
         if: needs.plan.outputs.paid == 'true'
         env:
-          KEY: ${{ secrets.MINIMAX_API_KEY }}
-          MODEL: ${{ inputs.model }}
+          # Only the chosen provider's key is passed to the step.
+          KEY: ${{ needs.plan.outputs.provider == 'deepseek' && secrets.DEEPSEEK_API_KEY || needs.plan.outputs.provider == 'minimax' && secrets.MINIMAX_API_KEY || '' }}
+          NAME: ${{ needs.plan.outputs.provider == 'deepseek' && 'DEEPSEEK_API_KEY' || 'MINIMAX_API_KEY' }}
+          ENDPOINT: ${{ needs.plan.outputs.endpoint }}
+          MODEL: ${{ needs.plan.outputs.model }}
         run: |
           if [ -z "$KEY" ]; then
-            echo "::error::No MINIMAX_API_KEY secret. Add it under Settings > Secrets and variables > Actions."
+            echo "::error::No $NAME secret. Add it under Settings > Secrets and variables > Actions."
             exit 1
           fi
           # One request of a few tokens. Only the status is printed.
@@ -144,24 +183,26 @@ jobs:
       - run: pip install "harbor==$HARBOR_VERSION"
       - name: harbor run
         env:
-          # Only a harness that will call the model gets the key, from the process environment rather
-          # than a flag, so it is not written into the job's config.json. The oracle runs without one.
-          ANTHROPIC_API_KEY: ${{ needs.plan.outputs.paid == 'true' && matrix.agent != 'oracle' && secrets.MINIMAX_API_KEY || '' }}
-          ANTHROPIC_BASE_URL: ${{ matrix.agent != 'oracle' && env.ENDPOINT || '' }}
+          # Only a harness that will call the model gets a key, and only the chosen provider's, from the
+          # process environment rather than a flag, so it is not written into the job's config.json.
+          ANTHROPIC_API_KEY: ${{ needs.plan.outputs.paid == 'true' && matrix.agent != 'oracle' && (needs.plan.outputs.provider == 'deepseek' && secrets.DEEPSEEK_API_KEY || needs.plan.outputs.provider == 'minimax' && secrets.MINIMAX_API_KEY) || '' }}
+          ANTHROPIC_BASE_URL: ${{ matrix.agent != 'oracle' && needs.plan.outputs.endpoint || '' }}
+          ENDPOINT: ${{ needs.plan.outputs.endpoint }}
+          MODEL: ${{ needs.plan.outputs.model }}
+          WINDOW: ${{ needs.plan.outputs.window }}
           PYTHONPATH: ${{ github.workspace }}
           AGENT: ${{ matrix.agent }}
           TASK: ${{ matrix.task }}
           JOB: ${{ matrix.id }}
-          MODEL: ${{ inputs.model }}
           INSTALL_ONLY: ${{ inputs.install_only }}
         run: |
           host=${ENDPOINT#*://}
           host=${host%%/*}
           # What LiteLLM needs to know about a model it has no entry for. Without it terminus-2 assumes a
           # 1,000,000-token window and LiteLLM asks Anthropic-style endpoints for 4,096 output tokens.
-          # 65,536 is MiniMax's recommended max_tokens for M2.7. Prices are zero here: the summary
-          # estimates cost from tokens for all three harnesses the same way.
-          info='{"max_input_tokens": 204800, "max_output_tokens": 65536, "max_tokens": 65536, "input_cost_per_token": 0, "output_cost_per_token": 0, "litellm_provider": "anthropic", "mode": "chat"}'
+          # 65,536 output tokens: MiniMax's recommended max_tokens, well inside DeepSeek's 384K. Prices are
+          # zero here: the summary estimates cost from tokens for all three harnesses the same way.
+          info="{\"max_input_tokens\": $WINDOW, \"max_output_tokens\": 65536, \"max_tokens\": 65536, \"input_cost_per_token\": 0, \"output_cost_per_token\": 0, \"litellm_provider\": \"anthropic\", \"mode\": \"chat\"}"
           args=(-d "$DATASET" --registry-url "$REGISTRY_URL" -i "$TASK" -k 1 -n 1 -o jobs --job-name "$JOB" -q)
           case "$AGENT" in
             oracle)
@@ -169,7 +210,7 @@ jobs:
             mini-claude-code)
               # Installs this very commit from GitHub, and tells the harness the model's window.
               args+=(-a integrations.harbor.mini_claude_code:MiniClaudeCode -m "anthropic/$MODEL"
-                --ak "ref=$GITHUB_SHA" --ak context_window=204800 --allow-agent-host "$host") ;;
+                --ak "ref=$GITHUB_SHA" --ak "context_window=$WINDOW" --allow-agent-host "$host") ;;
             terminus-2)
               # Runs on this machine and drives the container through tmux, so the key never enters it.
               args+=(-a terminus-2 -m "anthropic/$MODEL" --ak "api_base=$ENDPOINT" --ak "model_info=$info") ;;
@@ -180,11 +221,12 @@ jobs:
           if [ "$INSTALL_ONLY" = true ]; then args+=(--install-only); fi
           # No --yes: a task that asked for host variables would stop here instead of getting them.
           harbor run "${args[@]}" < /dev/null
-      - name: Take the key out of the logs
+      - name: Take the keys out of the logs
         id: scrub
         if: always()
         env:
-          SECRET: ${{ secrets.MINIMAX_API_KEY }}
+          SECRET: ${{ secrets.DEEPSEEK_API_KEY }}
+          SECRET_2: ${{ secrets.MINIMAX_API_KEY }}
         run: |
           if [ -d jobs ]; then
             sudo chown -R "$(id -u):$(id -g)" jobs
@@ -211,9 +253,11 @@ jobs:
           path: artifacts
       - env:
           MATRIX: ${{ needs.plan.outputs.matrix }}
+          PRICES: ${{ needs.plan.outputs.prices }}
+          PEAK: ${{ needs.plan.outputs.peak }}
         run: |
           echo "$MATRIX" > planned.json
-          python3 integrations/harbor/summarize.py artifacts --prices "$PRICES" --currency CNY \
+          python3 integrations/harbor/summarize.py artifacts --prices "$PRICES" --currency CNY --peak "$PEAK" \
             --expect planned.json --json summary.json | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v7
         if: always()
