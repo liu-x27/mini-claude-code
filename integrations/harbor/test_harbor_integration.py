@@ -256,6 +256,29 @@ class AdapterTest(unittest.TestCase):
 
         return MiniClaudeCode(logs_dir=logs, model_name="anthropic/MiniMax-M2.7", ref="abc", max_turns=5, context_window=204800)
 
+    def test_mini_swe_agent_is_harbors_with_one_more_install_step(self):
+        from harbor.agents.installed.mini_swe_agent import MiniSweAgent as HarborMiniSweAgent
+
+        from integrations.harbor.mini_swe_agent import MiniSweAgent
+
+        calls = []
+
+        async def fake_super_install(self, environment):
+            calls.append("harbor")
+
+        async def fake_exec(self, environment, command, **kwargs):
+            calls.append(command)
+
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(HarborMiniSweAgent, "install", fake_super_install), \
+                mock.patch.object(MiniSweAgent, "exec_as_agent", fake_exec):
+            agent = MiniSweAgent(logs_dir=Path(tmp), model_name="anthropic/deepseek-flash")
+            self.assertEqual(agent.name(), HarborMiniSweAgent.name())
+            asyncio.run(agent.install(object()))
+        self.assertEqual(calls[0], "harbor")
+        self.assertIn("uv pip install", calls[1])
+        self.assertIn("import mcp.types, litellm", calls[1])
+
     def test_key_and_endpoint_come_from_the_harbor_process(self):
         env = {"ANTHROPIC_API_KEY": "not-a-real-key", "ANTHROPIC_BASE_URL": "https://example.invalid/anthropic"}
         with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, env):
