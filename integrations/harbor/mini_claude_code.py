@@ -17,10 +17,11 @@ Agent kwargs (--ak):
     context_window=<tokens>       for a model the harness has no window for; sets AGENT_CONTEXT_WINDOW,
                                   which decides when the history is compacted
 
-A run that stopped short (the turn limit, stuck, a full context window) is
-left to the verifier; a run that threw (the API failing after its retries)
-raises, so the trial counts as an error rather than as a task the harness
-failed.
+Each trial writes the run's stream-json events, its session file and an ATIF
+trajectory.json to the agent log directory. A run that stopped short (the turn
+limit, stuck, a full context window) is left to the verifier; a run that threw
+(the API failing after its retries) raises, so the trial counts as an error
+rather than as a task the harness failed.
 """
 
 from __future__ import annotations
@@ -31,10 +32,13 @@ import uuid
 from types import SimpleNamespace
 from typing import ClassVar
 
+from harbor.agents.capabilities import AgentCapabilities
 from harbor.agents.installed.base import BaseInstalledAgent, with_prompt_template
 from harbor.agents.model_connection import ModelConnectionSpec
 from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
+
+from integrations.harbor import atif
 
 REPO = "https://github.com/liu-x27/mini-claude-code.git"
 # The Node CI uses: a newer npm resolves one optional peer in the lockfile differently, and
@@ -45,6 +49,7 @@ APP = "$HOME/.mini-claude-code"
 
 
 class MiniClaudeCode(BaseInstalledAgent):
+    capabilities: ClassVar[AgentCapabilities] = AgentCapabilities(atif=True)
     MODEL_CONNECTION: ClassVar[ModelConnectionSpec] = ModelConnectionSpec(
         default_provider="anthropic",
         api_key_envs=("ANTHROPIC_API_KEY",),
@@ -143,24 +148,53 @@ class MiniClaudeCode(BaseInstalledAgent):
             raise self._classify_exec_error("mini-claude-code -p", detail)
 
     def populate_context_post_run(self, context: AgentContext) -> None:
-        """Token counts and cost from the run's result line, when there is one."""
-        try:
-            lines = (self.logs_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()
-        except OSError:
+        """Tokens from the run's events, and its session as an ATIF trajectory."""
+        events = atif.read_jsonl(self.logs_dir / "events.jsonl")
+        if not events:
             return
-        result = _last_json("\n".join(line for line in lines if '"type":"result"' in line))
-        usage = result.get("usage") or {}
-        if not usage:
-            return
-        cached = usage.get("cache_read_input_tokens") or 0
-        written = usage.get("cache_creation_input_tokens") or 0
+        total, source = atif.usage_from_events(events)
         # Harbor counts input tokens with the cached ones included, and cached ones again on their own.
-        context.n_input_tokens = (usage.get("input_tokens") or 0) + written + cached
-        context.n_cache_tokens = cached
-        context.n_output_tokens = usage.get("output_tokens") or 0
+        context.n_input_tokens = atif.prompt_tokens(total)
+        context.n_cache_tokens = total["cache_read_input_tokens"]
+        context.n_output_tokens = total["output_tokens"]
+        result = next((e for e in reversed(events) if e.get("type") == "result"), {})
         if result.get("total_cost_usd") is not None:  # null for a model with no price in utils/cost.ts
             context.cost_usd = result["total_cost_usd"]
-        context.metadata = {"cache_creation_input_tokens": written, "stop_reason": result.get("stop_reason") or result.get("subtype")}
+        context.metadata = {
+            "usage_source": source,
+            "cache_creation_input_tokens": total["cache_creation_input_tokens"],
+            "exit_code": _read_text(self.logs_dir / "exit_code.txt"),
+            "stop_reason": result.get("stop_reason") or result.get("subtype"),
+            "num_turns": result.get("num_turns"),
+            "tool_calls": result.get("tool_calls"),
+        }
+
+        session_id = result.get("session_id") or next(
+            (e.get("sessionId") for e in events if e.get("type") == "session"), None
+        )
+        if not session_id:
+            return
+        trajectory = atif.session_to_atif(
+            atif.load_segments(self.logs_dir / "sessions", str(session_id)),
+            session_id=str(session_id),
+            agent_version=self.version() or self._ref,
+            model_name=self._parsed_model_name or self.model_name,
+            turns=atif.turn_usages(events),
+            total=total,
+            extra={"usage_source": source, "stop_reason": context.metadata["stop_reason"]},
+        )
+        if trajectory is None:
+            return
+        try:
+            from harbor.models.trajectories import Trajectory
+
+            validated = Trajectory.model_validate(trajectory)
+        except Exception as exc:  # a trajectory Harbor rejects is a bug here, not a reason to fail the trial
+            self.logger.warning(f"mini-claude-code trajectory did not validate as ATIF: {exc}")
+            return
+        (self.logs_dir / "trajectory.json").write_text(
+            json.dumps(validated.to_json_dict(), indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+        )
 
 
 def _last_json(stdout: str | None) -> dict:
@@ -171,3 +205,10 @@ def _last_json(stdout: str | None) -> dict:
             continue
         return value if isinstance(value, dict) else {}
     return {}
+
+
+def _read_text(path) -> str | None:
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
