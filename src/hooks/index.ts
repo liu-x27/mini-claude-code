@@ -12,9 +12,9 @@ export type HookEvent = "SessionStart" | "UserPromptSubmit" | "PreToolUse" | "Pe
 
 export type HookHandler =
   /** A shell command, run in the Bash tool's shell, with the input as JSON on stdin. */
-  | { type: "command"; command: string; timeout?: number }
+  | { type: "command"; command: string; timeout?: number; onFailure?: "ignore" | "block" }
   /** A POST of the input as JSON; the response body is the answer. */
-  | { type: "http"; url: string; timeout?: number; headers?: Record<string, string> }
+  | { type: "http"; url: string; timeout?: number; headers?: Record<string, string>; onFailure?: "ignore" | "block" }
   /** In-process, for the library. */
   | { type: "function"; run: (input: HookInput) => Promise<HookOutput | undefined> | HookOutput | undefined };
 
@@ -75,10 +75,15 @@ const DEFAULT_TIMEOUT_S = 60;
 /**
  * Run every hook for `event` whose matcher fits `toolName`, one after
  * another. The first block ends the list; an input one hook rewrites is what
- * the next one sees. A hook that fails any other way — a crash, a timeout, a
- * non-zero exit other than 2, an answer that is not JSON — is logged and
- * does not block: Claude Code's rule, and the only one under which a broken
- * hook cannot wedge every tool call.
+ * the next one sees.
+ *
+ * A hook that fails any other way — a crash, a timeout, a non-zero exit other
+ * than 2, an answer that is not JSON, an HTTP status outside 2xx — is logged
+ * and let through by default, so that a broken hook cannot wedge every tool
+ * call. A command or http hook with `onFailure: "block"` counts the failure as
+ * a block instead, as exit code 2 would: for a hook a safety check stands on,
+ * where a call let through because the checker died is the failure to avoid.
+ * Claude Code added the same setting, with the same default, in 2.1.295.
  */
 export async function runHooks(
   config: HooksConfig | undefined,
@@ -95,6 +100,11 @@ export async function runHooks(
     for (const handler of m.hooks) {
       const answer = await runHandler(handler, current);
       if (answer.error) {
+        if (handler.type !== "function" && handler.onFailure === "block") {
+          logger.warn(`${event} hook failed, blocked: ${answer.error}`);
+          outcome.block = `the hook failed (onFailure: "block"): ${answer.error}`;
+          return outcome;
+        }
         logger.warn(`${event} hook failed, ignored: ${answer.error}`);
         continue;
       }

@@ -15,7 +15,7 @@ import { GlobTool } from "../src/tools/glob.js";
 import { buildRgArgs, GrepTool } from "../src/tools/grep.js";
 import { decodeOutput, resolveShell } from "../src/tools/shell.js";
 import { buildParams } from "../src/model/anthropic.js";
-import type { HookOutput } from "../src/hooks/index.js";
+import type { HookHandler, HookOutput } from "../src/hooks/index.js";
 import { connectMcpServers } from "../src/mcp/index.js";
 import * as acp from "@agentclientprotocol/sdk";
 import { serveAcp } from "../src/acp/index.js";
@@ -2401,6 +2401,49 @@ await checkAsync("hooks：Stop 钩子可以把模型送回去继续做，第二�
   if (result.text !== "now really done" || client.seen.length !== 2) throw new Error(`结果: ${result.text}，调了 ${client.seen.length} 次`);
   if (!JSON.stringify(client.seen[1]!.at(-1)).includes("run the tests first")) throw new Error("模型没收到 Stop 钩子的理由");
   if (active.join(",") !== "false,true") throw new Error(`stop_hook_active: ${active.join(",")}`);
+});
+
+await checkAsync('hooks：坏掉的钩子默认放行；设了 onFailure: "block" 就拦下——崩溃、超时、坏 JSON、HTTP 500、连不上', async () => {
+  const script = async (name: string, body: string) => {
+    const file = path.join(scratch, name);
+    await fs.writeFile(file, body);
+    return `node "${file.replace(/\\/g, "/")}"`;
+  };
+  const fake = http.createServer((_req, res) => {
+    res.writeHead(500);
+    res.end();
+  });
+  await new Promise<void>((r) => fake.listen(0, "127.0.0.1", r));
+  // 一个刚关掉的端口：连上去一定被拒
+  const gone = http.createServer();
+  await new Promise<void>((r) => gone.listen(0, "127.0.0.1", r));
+  const { port: deadPort } = gone.address() as { port: number };
+  await new Promise((r) => gone.close(r));
+  try {
+    const { port } = fake.address() as { port: number };
+    const broken: Array<[string, Extract<HookHandler, { type: "command" | "http" }>]> = [
+      ["崩溃（exit 1）", { type: "command", command: await script("hook-crash.mjs", 'throw new Error("bug in the hook");') }],
+      ["超时", { type: "command", command: await script("hook-slow.mjs", "setTimeout(() => {}, 10_000);"), timeout: 0.5 }],
+      ["坏 JSON", { type: "command", command: await script("hook-bad-json.mjs", 'console.log("{ not json");') }],
+      ["HTTP 500", { type: "http", url: `http://127.0.0.1:${port}/hook` }],
+      ["连不上", { type: "http", url: `http://127.0.0.1:${deadPort}/hook` }],
+    ];
+    for (const [label, handler] of broken) {
+      for (const onFailure of [undefined, "block"] as const) {
+        const client = new ScriptedClient([calls(["t", "Echo", { text: "hi" }]), said("done")]);
+        const hook = onFailure ? { ...handler, onFailure } : handler;
+        await scriptedAgent(client, { hooks: { PreToolUse: [{ matcher: "Echo", hooks: [hook] }] } }).agent.run("go");
+        const [result] = toolResultsIn(client.seen[1]!);
+        if (!onFailure && (result?.is_error || result?.content !== "hi")) throw new Error(`${label}：默认该放行，结果 ${JSON.stringify(result)}`);
+        if (onFailure && !(result?.is_error && String(result.content).includes('onFailure: "block"'))) {
+          throw new Error(`${label}：设了 block 却放行了，结果 ${JSON.stringify(result)}`);
+        }
+      }
+    }
+  } finally {
+    fake.closeAllConnections();
+    await new Promise((r) => fake.close(r));
+  }
 });
 
 await checkAsync("effort：设了才发 output_config.effort，没设就不发", async () => {

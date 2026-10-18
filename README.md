@@ -340,7 +340,10 @@ answer allow or ask), `PermissionRequest` (asked before the gate and the user),
 `PostToolUse` and `Stop` (which can send the model back to work, five times a run at
 most). Handlers are shell commands, HTTP endpoints or, from the library, functions. A
 hook's allow never outweighs a deny rule, and a hook that crashes or times out is logged
-and ignored rather than blocking. XavierJev's own Claude Code server works as a
+and ignored rather than blocking — unless it is a command or HTTP hook set to
+`"onFailure": "block"`, as Claude Code allows since 2.1.295, in which case a crash, a
+timeout, an exit other than 0 or 2, unparseable JSON or a non-2xx answer blocks the call.
+XavierJev's own Claude Code server works as a
 `PermissionRequest` hook without a change: pointed at it with `--gate` off, the CLI had
 `wc -l src/agent.ts` cleared at P=0.074 and asked nothing.
 
