@@ -54,14 +54,14 @@ def _row(result: dict[str, Any], job: str, trial_dir: Path | None = None) -> dic
     context = result.get("agent_result") or {}
     metadata = context.get("metadata") or {}
     parts = job.split("__")
-    message = (exception_info.get("exception_message") or "").strip().splitlines()
     # An install-only run disables the verifier: no reward is what success looks like there.
     installed_only = bool(((result.get("config") or {}).get("verifier") or {}).get("disable"))
     return {
         "installed_only": installed_only,
         # What a reader needs to see why a trial did not pass, without downloading the artifact.
-        "exception_message": message[0][:300] if message else None,
+        "exception_message": _exception_text(exception_info.get("exception_message")),
         "test_output_tail": _tail(trial_dir / "verifier" / "test-stdout.txt") if trial_dir else None,
+        "agent_log_tail": _agent_log_tail(trial_dir) if trial_dir and exception_info else None,
         "job": job,
         "agent": agent,
         "task": result.get("task_name"),
@@ -103,6 +103,32 @@ def _category(reward: Any, exception: str | None, metadata: dict[str, Any], inst
     if stop and stop not in ("end_turn", "success"):
         return f"failed: stopped ({stop})"
     return "failed: finished, tests fail"
+
+
+def _exception_text(message: str | None) -> str | None:
+    """The exception's first line, and for a failed command what it printed rather than the command.
+
+    Harbor's message for an agent that exited non-zero is the whole command (the task's instruction
+    included) and then its stdout and stderr, cut to their ends; the cause is in the latter.
+    """
+    if not message:
+        return None
+    first = message.strip().splitlines()[0][:200]
+    for marker in ("\nstdout: ", "\nstderr: "):
+        at = message.find(marker)
+        if at >= 0:
+            return f"{first}\n...\n{message[at + 1:][-1500:]}"
+    return message.strip()[:1500]
+
+
+def _agent_log_tail(trial_dir: Path) -> str | None:
+    """The end of the agent's own log, for a trial that ended in an exception."""
+    for name in ("mini-swe-agent.txt", "stderr.txt", "trial.log"):
+        for path in (trial_dir / "agent" / name, trial_dir / name):
+            tail = _tail(path, lines=25, chars=2000)
+            if tail:
+                return f"{path.relative_to(trial_dir)}:\n{tail}"
+    return None
 
 
 def _tail(path: Path, lines: int = 15, chars: int = 1500) -> str | None:
@@ -253,12 +279,13 @@ def summarize(trials: list[dict[str, Any]], prices, currency: str, peak: str | N
         if not (isinstance(t["reward"], (int, float)) and t["reward"] >= 1) and not t["category"].startswith("installed")
     ]
     if failed:
-        out.append(f"\nThe {len(failed)} trial(s) that did not pass: the exception, and the end of the tests' output.\n")
+        out.append(f"\nThe {len(failed)} trial(s) that did not pass: the exception, the end of the agent's log, and the end of the tests' output.\n")
         for row in failed:
-            body = "\n".join(
+            body = "\n\n".join(
                 part
                 for part in (
                     f"{row['exception']}: {row['exception_message']}" if row["exception"] else None,
+                    row.get("agent_log_tail"),
                     row["test_output_tail"],
                 )
                 if part

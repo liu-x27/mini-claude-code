@@ -231,6 +231,10 @@ class ScriptsTest(unittest.TestCase):
             # Why a trial failed is on the summary page, not only in the artifact.
             self.assertIn("terminus-2__b__1: failed: finished, tests fail", markdown)
             self.assertIn("FAILED test_output", markdown)
+            # A failed command's message is the command and then its output: the output is what is shown.
+            text = summarize._exception_text("Command failed (exit 1): mini-swe-agent --task='a long task'\nstdout: litellm.BadRequestError: 400\nstderr: None")
+            self.assertTrue(text.startswith("Command failed (exit 1)"))
+            self.assertIn("stdout: litellm.BadRequestError: 400", text)
             # An install-only trial that installed is not an error, and has nothing to explain.
             installed = summarize._row({**trial("j", "terminus-2", "a", None), "verifier_result": None,
                                         "config": {"verifier": {"disable": True}}}, job="terminus-2__a__1")
