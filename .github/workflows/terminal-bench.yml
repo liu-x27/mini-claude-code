@@ -28,6 +28,11 @@ on:
       model:
         description: "The model behind it; empty means deepseek-flash on deepseek, MiniMax-M2.7 on minimax"
         default: ""
+      thinking:
+        description: "The thinking parameter mini-claude-code sends: adaptive (its default), or omit to send none, as the other two do"
+        type: choice
+        options: [adaptive, omit, enabled, disabled]
+        default: adaptive
       max_parallel:
         description: Trials at once (a free account runs 20 jobs at a time across all its repositories)
         default: "10"
@@ -107,6 +112,7 @@ jobs:
           PAID_TRIALS: ${{ inputs.paid_trials }}
           PROVIDER: ${{ steps.provider.outputs.provider }}
           MODEL: ${{ steps.provider.outputs.model }}
+          THINKING: ${{ inputs.thinking }}
         run: |
           matrix=$(python3 integrations/harbor/plan.py --registry-url "$REGISTRY_URL" --dataset "$DATASET" \
             --agents "$AGENTS" --tasks "$TASKS" --attempts "$ATTEMPTS")
@@ -119,7 +125,9 @@ jobs:
           paid=false
           if [ "$calls" -gt 0 ]; then paid=true; fi
           echo "paid=$paid" >> "$GITHUB_OUTPUT"
-          echo "Trials: $(echo "$matrix" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))'); calling the model: $calls ($MODEL on $PROVIDER)" >> "$GITHUB_STEP_SUMMARY"
+          note=""
+          if [[ ",${AGENTS// /}," == *,mini-claude-code,* ]]; then note="; mini-claude-code's thinking parameter: $THINKING"; fi
+          echo "Trials: $(echo "$matrix" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))'); calling the model: $calls ($MODEL on $PROVIDER)$note" >> "$GITHUB_STEP_SUMMARY"
           # A form that came through with a box unticked or a field left over is one click from a paid run;
           # the person starting one has to know, and type, how many trials will spend money.
           if [ "$paid" = true ] && [ "$(echo "$PAID_TRIALS" | tr -d ' ')" != "$calls" ]; then
@@ -195,6 +203,7 @@ jobs:
           TASK: ${{ matrix.task }}
           JOB: ${{ matrix.id }}
           INSTALL_ONLY: ${{ inputs.install_only }}
+          THINKING: ${{ inputs.thinking }}
         run: |
           host=${ENDPOINT#*://}
           host=${host%%/*}
@@ -208,9 +217,11 @@ jobs:
             oracle)
               args+=(-a oracle) ;;
             mini-claude-code)
-              # Installs this very commit from GitHub, and tells the harness the model's window.
+              # Installs this very commit from GitHub, and tells the harness the model's window and
+              # which thinking parameter to send.
               args+=(-a integrations.harbor.mini_claude_code:MiniClaudeCode -m "anthropic/$MODEL"
-                --ak "ref=$GITHUB_SHA" --ak "context_window=$WINDOW" --allow-agent-host "$host") ;;
+                --ak "ref=$GITHUB_SHA" --ak "context_window=$WINDOW" --ak "thinking=$THINKING"
+                --allow-agent-host "$host") ;;
             terminus-2)
               # Runs on this machine and drives the container through tmux, so the key never enters it.
               args+=(-a terminus-2 -m "anthropic/$MODEL" --ak "api_base=$ENDPOINT" --ak "model_info=$info") ;;

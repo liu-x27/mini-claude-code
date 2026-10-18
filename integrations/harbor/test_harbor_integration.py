@@ -332,6 +332,29 @@ class AdapterTest(unittest.TestCase):
         self.assertIn("Do the task", env.values())
         self.assertEqual(env["AGENT_CONTEXT_WINDOW"], "204800")
         self.assertEqual(env["ANTHROPIC_API_KEY"], "not-a-real-key")
+        self.assertNotIn("AGENT_THINKING", env)  # no kwarg: the harness's own default
+
+    def test_thinking_goes_through_the_environment_and_a_misspelt_one_fails_first(self):
+        from harbor.models.agent.context import AgentContext
+
+        from integrations.harbor.mini_claude_code import MiniClaudeCode
+
+        envs = []
+
+        class FakeEnvironment:
+            default_user = None
+
+            async def exec(self, command, user=None, env=None, cwd=None, timeout_sec=None):
+                envs.append(env)
+                line = {"type": "result", "subtype": "success"}
+                return SimpleNamespace(return_code=0, stdout=json.dumps(line) + "\n", stderr="")
+
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {"ANTHROPIC_API_KEY": "not-a-real-key"}):
+            agent = MiniClaudeCode(logs_dir=Path(tmp), model_name="anthropic/deepseek-flash", thinking="Omit")
+            asyncio.run(agent.run("Do the task", FakeEnvironment(), AgentContext()))
+            self.assertEqual(envs[-1]["AGENT_THINKING"], "omit")
+            with self.assertRaises(ValueError):
+                MiniClaudeCode(logs_dir=Path(tmp), model_name="anthropic/deepseek-flash", thinking="omitted")
 
     def test_context_and_trajectory_after_a_run(self):
         from harbor.models.agent.context import AgentContext

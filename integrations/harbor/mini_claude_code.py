@@ -16,6 +16,9 @@ Agent kwargs (--ak):
                                   as it is for terminus-2 and mini-swe-agent)
     context_window=<tokens>       for a model the harness has no window for; sets AGENT_CONTEXT_WINDOW,
                                   which decides when the history is compacted
+    thinking=<value>              the thinking parameter it sends, through AGENT_THINKING: adaptive (its
+                                  default), enabled, disabled, or omit, which sends none and leaves the
+                                  endpoint's default, as terminus-2 and mini-swe-agent do
 
 Each trial writes the run's stream-json events, its session file and an ATIF
 trajectory.json to the agent log directory. A run that stopped short (the turn
@@ -49,6 +52,8 @@ REPO = "https://github.com/liu-x27/mini-claude-code.git"
 # so the task's shell keeps whatever node the task image has.
 NODE_VERSION = "24.12.0"
 APP = "$HOME/.mini-claude-code"
+# What AGENT_THINKING takes (src/agent.ts); checked here too, so a misspelt kwarg fails before any trial.
+THINKING = ("adaptive", "enabled", "disabled", "omit")
 
 
 class MiniClaudeCode(BaseInstalledAgent):
@@ -68,6 +73,7 @@ class MiniClaudeCode(BaseInstalledAgent):
         repo: str = REPO,
         max_turns: int | str = 1000,
         context_window: int | str | None = None,
+        thinking: str | None = None,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
@@ -75,6 +81,9 @@ class MiniClaudeCode(BaseInstalledAgent):
         self._repo = str(repo)
         self._max_turns = int(max_turns)
         self._context_window = int(context_window) if context_window else None
+        self._thinking = str(thinking).strip().lower() if thinking else None
+        if self._thinking and self._thinking not in THINKING:
+            raise ValueError(f"thinking={thinking!r}: expected one of {', '.join(THINKING)}")
 
     @staticmethod
     def name() -> str:
@@ -123,6 +132,8 @@ class MiniClaudeCode(BaseInstalledAgent):
         }
         if self._context_window:
             env["AGENT_CONTEXT_WINDOW"] = str(self._context_window)
+        if self._thinking:
+            env["AGENT_THINKING"] = self._thinking
         flags = [
             "--allow-all",  # a container with nobody to ask; the verifier decides what counted
             "--output-format", "stream-json",
