@@ -410,7 +410,7 @@ the session — the safety feature is the reason the safety feature gets disable
 [xavierjev](https://github.com/liu-x27/XavierJev) package (v0.7.1 here), which grew out of
 this directory and is where it is measured now: the numbers below are the gate as it ships
 from there, and its README has what came after the split — a judge fine-tuned on one
-machine's commands, the 1,181 commands the gate cleared on real traffic each read by hand,
+machine's commands, the 1,181 commands the gate cleared on real traffic each read one by one,
 and a startup self-check that will not let an unverified judge clear anything. It borrows its shape from
 "System One" decision models: state plus declared typed questions in, probabilities out,
 no prose. Routing, risk gating, retry and stop decisions in an agent loop all have that
