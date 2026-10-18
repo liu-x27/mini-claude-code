@@ -840,6 +840,7 @@ npm run build
 
 CI runs the mock suite, the typecheck, lint and build, and the risk gate's dev set on the
 offline allow-list — never a held-out set, whose reads are logged — on Ubuntu and Windows.
+A second workflow, started by hand only, runs Terminal-Bench through Harbor (below).
 
 `npm run typecheck` covers `cli/`, `server/`, `client/` and `examples/` as well as
 `src/`, which `npm run build` does not — the former are run through `tsx`, so nothing
@@ -850,22 +851,74 @@ tools.
 
 ### On Terminal-Bench, through Harbor
 
-`integrations/harbor/mini_claude_code.py` runs this harness as a Harbor installed agent:
-it installs Node 22+ and this repository in the task's container, runs `-p` with
-`--output-format stream-json` in the task's directory, and reads the token counts back
-from the result line.
+`integrations/harbor/mini_claude_code.py` runs this harness as a Harbor installed agent: it
+puts Node 24.12.0 and the chosen commit of this repository in the task's container, runs
+`-p` with `--output-format stream-json` in the task's directory, and writes the session as
+an ATIF trajectory, the format Harbor's viewer reads. The key and the endpoint come from
+the Harbor process's environment, as they do for Harbor's own claude-code agent:
 
 ```bash
+ANTHROPIC_API_KEY=… ANTHROPIC_BASE_URL=https://your-provider/anthropic \
 harbor run -d terminal-bench@2.0 \
-  -a integrations.harbor.mini_claude_code:MiniClaudeCode \
-  -m anthropic/claude-opus-5-5 --agent-env ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY
+  -a integrations.harbor.mini_claude_code:MiniClaudeCode -m anthropic/their-model-id
 ```
 
-The measurement it exists for is the same model three ways — this harness, Harbor's
-terminus-2 and mini-swe-agent — since on Terminal-Bench 2.0 the harness alone has moved
-one model by 18 points. **Not yet run:** it was written against Harbor's documented
-interface on a machine without Docker, and the command it builds was only run locally,
-outside a container. It installs from GitHub, so `--agent-kwarg ref=` names what it runs.
+The measurement it exists for is the same model three ways: on the public 2.0 board the
+same model has scored up to 21 points apart under different harnesses (Harbor Hub's copy of
+the board, 142 rows, not all verified). `.github/workflows/terminal-bench.yml` takes it on
+GitHub Actions, which has the Docker this machine lacks, beside Harbor's terminus-2 and
+mini-swe-agent on one model and one endpoint: started by hand only, one trial per job,
+Harbor 0.24.0, the 89 tasks of Terminal-Bench 2.0 pinned to one commit, ubuntu-24.04
+runners (4 CPUs, 16 GB).
+
+**The first run, 2026-10-18:** DeepSeek-V4.1-Flash (`deepseek-flash`, thinking on by
+default) through DeepSeek's Anthropic-compatible endpoint, 10 tasks × 2 attempts × 3
+harnesses ([the run](https://github.com/liu-x27/mini-claude-code/actions/runs/39166341284)).
+
+| harness | passed | score, 95% CI over tasks | input tokens / trial (cached) | output tokens / trial | est. cost / trial | median time |
+|---|---|---|---|---|---|---|
+| mini-claude-code | 18 / 20 | 90% (75–100) | 448k (432k) | 13k | CNY 0.08 | 1.3 min |
+| terminus-2 | 18 / 20 | 90% (75–100) | 187k (175k) | 30k | CNY 0.14 | 1.8 min |
+| mini-swe-agent | 15 / 20 | 75% (50–100) | 161k (147k) | 24k | CNY 0.11 | 1.2 min |
+
+Ten tasks do not separate them. Paired over the same tasks, terminus-2 scores 0 points
+against this harness (95% interval −20 to +20) and mini-swe-agent −15 (−45 to +10). What
+the run does show is where the misses came from. Six of the nine are one mistake: test
+binaries compiled into the directory that the two polyglot tasks require to hold the
+source file and nothing else — all four of mini-swe-agent's polyglot trials, two of
+terminus-2's four, none of this harness's four. Two more are configure-git-webserver's
+server answering 404 (this harness once, mini-swe-agent once), and one is this harness
+running out of chess-best-move's 900 s without writing its answer. No trial errored; one
+terminus-2 trial ran out of time and passed anyway.
+
+What the run did and did not control for:
+
+- **The tasks.** The 10 are the seven of the benchmark's own 10-task sample whose reference
+  solution passes on the runner, and three drawn with `random.Random(20261018).sample` from
+  the 36 other tasks with the same 900 s limit whose solution passes too:
+  hf-model-inference, polyglot-rust-c and db-wal-recovery. Run on all 89, the reference
+  solutions pass 79 on this runner. Of the other ten, the two QEMU tasks' Debian 11 images
+  can no longer install packages, two solutions run past their limits on 4 CPUs, and six
+  fail their tests or leave no output.
+- **Each harness as it runs on a model it knows.** terminus-2 and mini-swe-agent get the
+  model's window and output limit registered in LiteLLM, without which LiteLLM asks for
+  4,096 output tokens. This harness keeps its own 16,000 (more when a reply is cut off
+  mid tool call) and is told the 1M window. It sends `thinking: {"type": "adaptive"}`, its
+  default, which DeepSeek accepts and does not document; the other two send
+  none, which leaves DeepSeek's default, thinking on. Whether the two come to the same is
+  not known, and this harness's output per trial is about half the others'.
+- **mini-swe-agent ran in its text-based mode.** Harbor's install leaves out the `mcp`
+  package that today's LiteLLM imports, and in mini-swe-agent's tool-calling mode LiteLLM
+  now marks its bash tool `"type": "custom"`, which DeepSeek's endpoint rejects.
+  `integrations/harbor/mini_swe_agent.py` adds the package and runs mini-swe-agent's own
+  `mini_textbased` configuration, which sends no tools.
+- **No retries**, so every token is in the count: Harbor deletes a retried attempt.
+- **Cost** is estimated from tokens at DeepSeek's off-peak list prices (CNY 1 per million
+  uncached input tokens, 0.02 cached, 4 output); the 60 trials came to about CNY 6.5.
+
+Not run yet: more tasks or attempts, which telling the three apart needs; other models
+(MiniMax-M2.7 is wired in as a second provider); Harbor's claude-code agent as a fourth
+harness on the same endpoint.
 
 ### Any Anthropic-compatible endpoint
 
@@ -923,7 +976,8 @@ The live path — streaming, the agentic loop, tool calls, and the permission ro
 under piped input — has been exercised end to end against an Anthropic-compatible
 endpoint (MiniMax M2), and again after the web server moved onto `Agent` — CLI and
 browser, through both clients — against a local Ollama. It is not in CI: it needs a live
-model. Cost figures
+model. On Terminal-Bench it has run in containers on GitHub Actions, against
+DeepSeek-V4.1-Flash, beside two other harnesses: see On Terminal-Bench, through Harbor. Cost figures
 come from the table in `src/utils/cost.ts`, which prices Anthropic models; any other
 model is reported as cost unknown rather than priced as Claude Opus 5, which it used to be.
 
