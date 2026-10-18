@@ -196,6 +196,8 @@ class ScriptsTest(unittest.TestCase):
             ]:
                 (root / job / "t").mkdir(parents=True)
                 (root / job / "t" / "result.json").write_text(json.dumps(trial(job, agent, task, reward, exc)))
+            (root / "terminus-2__b__1" / "t" / "verifier").mkdir()
+            (root / "terminus-2__b__1" / "t" / "verifier" / "test-stdout.txt").write_text("collected 2\nFAILED test_output\n")
             (root / "terminus-2__a__1" / "result.json").write_text(json.dumps({"n_total_trials": 1}))
             trials = summarize.load_trials(root)
             self.assertEqual(len(trials), 5)
@@ -207,6 +209,9 @@ class ScriptsTest(unittest.TestCase):
             self.assertAlmostEqual(trials[0]["est_cost"], (200 * 2.1 + 800 * 0.42 + 50 * 8.4) / 1e6)
             self.assertIn("| a | 1/1 | 1/2 T |", markdown)
             self.assertIn("| b | 1/1 E | 0/1 |", markdown)
+            # Why a trial failed is on the summary page, not only in the artifact.
+            self.assertIn("terminus-2__b__1: failed: finished, tests fail", markdown)
+            self.assertIn("FAILED test_output", markdown)
             planned = Path(tmp) / "planned.json"
             planned.write_text(json.dumps([{"id": "terminus-2__a__1"}, {"id": "terminus-2__c__1"}]))
             done = subprocess.run(

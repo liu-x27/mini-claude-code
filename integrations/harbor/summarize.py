@@ -39,19 +39,24 @@ def load_trials(root: Path) -> list[dict[str, Any]]:
             continue
         if not isinstance(result, dict) or "trial_name" not in result:
             continue  # the job's own result.json
-        trials.append(_row(result, job=path.parent.parent.name))
+        trials.append(_row(result, job=path.parent.parent.name, trial_dir=path.parent))
     return trials
 
 
-def _row(result: dict[str, Any], job: str) -> dict[str, Any]:
+def _row(result: dict[str, Any], job: str, trial_dir: Path | None = None) -> dict[str, Any]:
     agent = (result.get("agent_info") or {}).get("name") or "?"
     rewards = (result.get("verifier_result") or {}).get("rewards") or {}
     reward = rewards.get("reward", next(iter(rewards.values()), None)) if rewards else None
-    exception = (result.get("exception_info") or {}).get("exception_type")
+    exception_info = result.get("exception_info") or {}
+    exception = exception_info.get("exception_type")
     context = result.get("agent_result") or {}
     metadata = context.get("metadata") or {}
     parts = job.split("__")
+    message = (exception_info.get("exception_message") or "").strip().splitlines()
     return {
+        # What a reader needs to see why a trial did not pass, without downloading the artifact.
+        "exception_message": message[0][:300] if message else None,
+        "test_output_tail": _tail(trial_dir / "verifier" / "test-stdout.txt") if trial_dir else None,
         "job": job,
         "agent": agent,
         "task": result.get("task_name"),
@@ -90,6 +95,14 @@ def _category(reward: Any, exception: str | None, metadata: dict[str, Any]) -> s
     if stop and stop not in ("end_turn", "success"):
         return f"failed: stopped ({stop})"
     return "failed: finished, tests fail"
+
+
+def _tail(path: Path, lines: int = 15, chars: int = 1500) -> str | None:
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    return "\n".join(text.rstrip().splitlines()[-lines:])[-chars:] or None
 
 
 def _seconds(timing: Any) -> float | None:
@@ -209,6 +222,20 @@ def summarize(trials: list[dict[str, Any]], prices, currency: str) -> tuple[str,
             cells.append(f"{passed}/{len(rows)} {marks}".strip() if rows else "–")
         out.append(f"| {task} | " + " | ".join(cells) + " |")
     out.append("\nT timed out, E errored, S stopped short (turn limit, stuck, context).")
+
+    failed = [t for t in trials if not (isinstance(t["reward"], (int, float)) and t["reward"] >= 1)]
+    if failed:
+        out.append(f"\nThe {len(failed)} trial(s) that did not pass: the exception, and the end of the tests' output.\n")
+        for row in failed:
+            body = "\n".join(
+                part
+                for part in (
+                    f"{row['exception']}: {row['exception_message']}" if row["exception"] else None,
+                    row["test_output_tail"],
+                )
+                if part
+            )
+            out.append(f"<details><summary>{row['job']}: {row['category']}</summary>\n\n```\n{body or '(no test output)'}\n```\n</details>")
 
     for row in trials:
         row["est_cost"] = cost(row, prices)
