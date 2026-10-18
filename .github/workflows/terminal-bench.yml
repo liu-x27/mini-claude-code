@@ -26,6 +26,9 @@ on:
       max_parallel:
         description: Trials at once (a free account runs 20 jobs at a time across all its repositories)
         default: "10"
+      paid_trials:
+        description: "A run that calls the model costs money: type how many of its trials call the model, or it will not start"
+        default: ""
 
 permissions:
   contents: read
@@ -67,16 +70,26 @@ jobs:
           TASKS: ${{ inputs.tasks }}
           ATTEMPTS: ${{ inputs.attempts }}
           INSTALL_ONLY: ${{ inputs.install_only }}
+          PAID_TRIALS: ${{ inputs.paid_trials }}
         run: |
           matrix=$(python3 integrations/harbor/plan.py --registry-url "$REGISTRY_URL" --dataset "$DATASET" \
             --agents "$AGENTS" --tasks "$TASKS" --attempts "$ATTEMPTS")
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
-          paid=false
-          if [ "$INSTALL_ONLY" != true ] && [ -n "$(echo "$AGENTS" | tr ', ' '\n\n' | grep -v -x -e oracle -e '')" ]; then
-            paid=true
+          # Trials that call the model: every trial of an agent other than the oracle, unless only installing.
+          calls=0
+          if [ "$INSTALL_ONLY" != true ]; then
+            calls=$(echo "$matrix" | python3 -c 'import json,sys; print(sum(t["agent"] != "oracle" for t in json.load(sys.stdin)))')
           fi
+          paid=false
+          if [ "$calls" -gt 0 ]; then paid=true; fi
           echo "paid=$paid" >> "$GITHUB_OUTPUT"
-          echo "Trials: $(echo "$matrix" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))'); calls the model: $paid" >> "$GITHUB_STEP_SUMMARY"
+          echo "Trials: $(echo "$matrix" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))'); calling the model: $calls" >> "$GITHUB_STEP_SUMMARY"
+          # A form that came through with a box unticked or a field left over is one click from a paid run;
+          # the person starting one has to know, and type, how many trials will spend money.
+          if [ "$paid" = true ] && [ "$(echo "$PAID_TRIALS" | tr -d ' ')" != "$calls" ]; then
+            echo "::error::This run would call the model in $calls trials. To start it, type $calls in paid_trials."
+            exit 1
+          fi
 
   preflight:
     # The adapter under the pinned Harbor, before any trial starts; for a paid run, also the key.
