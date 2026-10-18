@@ -212,6 +212,10 @@ class ScriptsTest(unittest.TestCase):
             # Why a trial failed is on the summary page, not only in the artifact.
             self.assertIn("terminus-2__b__1: failed: finished, tests fail", markdown)
             self.assertIn("FAILED test_output", markdown)
+            # An install-only trial that installed is not an error, and has nothing to explain.
+            installed = summarize._row({**trial("j", "terminus-2", "a", None), "verifier_result": None,
+                                        "config": {"verifier": {"disable": True}}}, job="terminus-2__a__1")
+            self.assertEqual(installed["category"], "installed (install-only run)")
             planned = Path(tmp) / "planned.json"
             planned.write_text(json.dumps([{"id": "terminus-2__a__1"}, {"id": "terminus-2__c__1"}]))
             done = subprocess.run(

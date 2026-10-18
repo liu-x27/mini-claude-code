@@ -53,7 +53,10 @@ def _row(result: dict[str, Any], job: str, trial_dir: Path | None = None) -> dic
     metadata = context.get("metadata") or {}
     parts = job.split("__")
     message = (exception_info.get("exception_message") or "").strip().splitlines()
+    # An install-only run disables the verifier: no reward is what success looks like there.
+    installed_only = bool(((result.get("config") or {}).get("verifier") or {}).get("disable"))
     return {
+        "installed_only": installed_only,
         # What a reader needs to see why a trial did not pass, without downloading the artifact.
         "exception_message": message[0][:300] if message else None,
         "test_output_tail": _tail(trial_dir / "verifier" / "test-stdout.txt") if trial_dir else None,
@@ -63,7 +66,7 @@ def _row(result: dict[str, Any], job: str, trial_dir: Path | None = None) -> dic
         "attempt": parts[2] if len(parts) == 3 else None,
         "reward": reward,
         "exception": exception,
-        "category": _category(reward, exception, metadata),
+        "category": _category(reward, exception, metadata, installed_only),
         "input_tokens": context.get("n_input_tokens"),
         "cached_tokens": context.get("n_cache_tokens"),
         "cache_write_tokens": metadata.get("cache_creation_input_tokens"),
@@ -76,7 +79,9 @@ def _row(result: dict[str, Any], job: str, trial_dir: Path | None = None) -> dic
     }
 
 
-def _category(reward: Any, exception: str | None, metadata: dict[str, Any]) -> str:
+def _category(reward: Any, exception: str | None, metadata: dict[str, Any], installed_only: bool = False) -> str:
+    if installed_only and not exception:
+        return "installed (install-only run)"
     if isinstance(reward, (int, float)) and reward >= 1:
         return "passed" if not exception else f"passed, with {exception}"
     if exception == "AgentTimeoutError":
@@ -223,7 +228,11 @@ def summarize(trials: list[dict[str, Any]], prices, currency: str) -> tuple[str,
         out.append(f"| {task} | " + " | ".join(cells) + " |")
     out.append("\nT timed out, E errored, S stopped short (turn limit, stuck, context).")
 
-    failed = [t for t in trials if not (isinstance(t["reward"], (int, float)) and t["reward"] >= 1)]
+    failed = [
+        t
+        for t in trials
+        if not (isinstance(t["reward"], (int, float)) and t["reward"] >= 1) and not t["category"].startswith("installed")
+    ]
     if failed:
         out.append(f"\nThe {len(failed)} trial(s) that did not pass: the exception, and the end of the tests' output.\n")
         for row in failed:
