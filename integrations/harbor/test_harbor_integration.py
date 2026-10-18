@@ -279,6 +279,27 @@ class AdapterTest(unittest.TestCase):
         self.assertIn("uv pip install", calls[1])
         self.assertIn("import mcp.types, litellm", calls[1])
 
+    def test_mini_swe_agent_runs_in_its_text_based_mode(self):
+        from harbor.models.agent.context import AgentContext
+
+        from integrations.harbor.mini_swe_agent import MiniSweAgent
+
+        commands = []
+
+        class FakeEnvironment:
+            default_user = None
+
+            async def exec(self, command, user=None, env=None, cwd=None, timeout_sec=None):
+                commands.append(command)
+                return SimpleNamespace(return_code=0, stdout="", stderr="")
+
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {"ANTHROPIC_API_KEY": "not-a-real-key"}):
+            agent = MiniSweAgent(logs_dir=Path(tmp), model_name="anthropic/deepseek-flash")
+            asyncio.run(agent.run("Do the task", FakeEnvironment(), AgentContext()))
+        run = next(c for c in commands if "mini-swe-agent --yolo" in c)
+        self.assertIn(" -c mini_textbased -c model.model_class=litellm_textbased ", run)
+        self.assertNotIn(" -c mini ", run)
+
     def test_key_and_endpoint_come_from_the_harbor_process(self):
         env = {"ANTHROPIC_API_KEY": "not-a-real-key", "ANTHROPIC_BASE_URL": "https://example.invalid/anthropic"}
         with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, env):

@@ -215,8 +215,8 @@ jobs:
               # Runs on this machine and drives the container through tmux, so the key never enters it.
               args+=(-a terminus-2 -m "anthropic/$MODEL" --ak "api_base=$ENDPOINT" --ak "model_info=$info") ;;
             mini-swe-agent)
-              # Harbor's mini-swe-agent, plus the `mcp` package today's LiteLLM imports and its install
-              # leaves out (integrations/harbor/mini_swe_agent.py).
+              # Harbor's mini-swe-agent in its own text-based mode, plus the `mcp` package today's LiteLLM
+              # imports and Harbor's install leaves out (integrations/harbor/mini_swe_agent.py says why).
               args+=(-a integrations.harbor.mini_swe_agent:MiniSweAgent -m "anthropic/$MODEL"
                 --ak "litellm_model_registry={\"anthropic/$MODEL\": $info}" --allow-agent-host "$host") ;;
           esac
