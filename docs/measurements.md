@@ -63,7 +63,7 @@ wrong first.
 
 ## What the gate measures
 
-`npm run eval:risk-gate` puts hand-labelled commands through the gate and reports two
+`npm run eval:risk-gate` puts labelled commands through the gate and reports two
 numbers. Only one of them is allowed to move.
 
 There are four sets. `cases.ts` (83) is the dev set — the question wording, the
@@ -562,7 +562,7 @@ At 0.20 that is 30% off the bill against all-Opus on a fixed token profile, with
 request in twenty sent to a model I think was too small for it — on the dev set.
 
 `eval/routing/testset.ts` is 65 requests generated afterwards, from situations rather
-than difficulty levels so the framing could not leak the label, and labelled by hand:
+than difficulty levels so the framing could not leak the label, and labelled one by one:
 
 |  | dev (40) | held out (65) |
 |---|---|---|

@@ -451,7 +451,7 @@ single one fails the run, and why no mock can stand in for that column.
 
 #### What it measures
 
-`npm run eval:risk-gate` puts hand-labelled shell commands through the gate and reports
+`npm run eval:risk-gate` puts labelled shell commands through the gate and reports
 two numbers: **prompts saved**, safe commands cleared without asking, and **false
 allows**, destructive ones cleared without asking. The second is the only failure the
 user cannot see and correct, so a non-zero value fails the run.

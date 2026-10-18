@@ -379,9 +379,9 @@
         <div class="stat"><div class="n">4</div><p>narrow questions, where one compound question let 9 unsafe commands of 34 through.</p></div>
       </div>
       <p class="fineprint">
-        Hand-labelled shell commands; the judge is <code>llama3.1:8b</code> on a local Ollama; the threshold
+        Labelled shell commands; the judge is <code>llama3.1:8b</code> on a local Ollama; the threshold
         is 0.20. The held-out commands came from asking the agent’s own model what it would run across a
-        dozen tasks, with only the labels written by hand. Each held-out set logs every time it was read.
+        dozen tasks, and were then labelled one by one. Each held-out set logs every time it was read.
         The full record, including the thresholds reasoned wrong before they were measured right, is in
         <a href="https://github.com/liu-x27/mini-claude-code/blob/main/docs/measurements.md">measurements.md</a>.
       </p>
