@@ -896,7 +896,8 @@ through DeepSeek's Anthropic-compatible endpoint, one attempt per task and harne
 | mini-swe-agent | 44 / 63 | 70% (59–81) | 499k (478k) | 50k | CNY 0.23 | 2.0 min |
 
 Claude Code is ahead, and that is the one gap the run resolves. Paired over the same tasks,
-it scores 11 points above this harness (95% interval +2 to +21). terminus-2 and
+it scores 11 points above this harness (95% interval +2 to +21); against this harness with
+its two failures fixed (below), the gap is 6.5 points and no longer resolved. terminus-2 and
 mini-swe-agent each score 6 points below this harness (−16 to +3), so the run does not
 separate it from them. All four passed 38 of the tasks and none passed 6, so the order comes
 from the other 19. On those, Claude Code passed 9 that this harness missed, and missed 2 that
@@ -931,6 +932,36 @@ The 252 trials came to about CNY 50 at DeepSeek's off-peak prices: 10.0 for this
 8.6 for Claude Code, 17.0 for terminus-2 and 14.6 for mini-swe-agent. This harness sends the
 most input per trial, 98% of it cached, and writes less output than either terminus-2 or
 mini-swe-agent: 29k a trial, against 60k and 50k.
+
+**This harness again, with both failures fixed, 2026-10-19:** the same 63 tasks, model and
+endpoint, one attempt each, this harness alone, at the commit that fixed both
+([the run](https://github.com/liu-x27/mini-claude-code/actions/runs/39265052974)).
+
+| harness | passed | score, 95% CI over tasks | input tokens / trial (cached) | output tokens / trial | est. cost / trial | median time |
+|---|---|---|---|---|---|---|
+| mini-claude-code, fixed | 51 / 62 | 82% (73–90) | 1,366k (1,338k) | 36k | CNY 0.20 | 2.2 min |
+
+62 of the 63 trials have a result. The 63rd, extract-moves-from-video, has none: 17.5
+minutes in, the runner cancelled the step that runs Harbor, and the job's log shows nothing
+before the cancel (the job's own limit is 300 minutes). Every harness missed that task in the
+run above, and it is left out of every number here.
+
+None of the 62 errored or stopped short. Of the 11 misses, two ran out of time and nine
+finished with the tests failing; one more trial ran out of time and passed anyway. Where the
+fixes could be seen, they held. No stream broke in the 62, so no call went uncounted. In
+adaptive-rejection-sampler, thinking filled 16,000 and then 32,000 tokens before any text,
+and the turn was asked again with 64,000. The run did not end there, as it had in the run
+above: it ran until its 900 s were up, and 1 of the task's 9 tests failed. path-tracing-reverse
+and polyglot-c-py, the other two tasks this harness had lost by itself, passed.
+
+Paired over the 62 tasks against the run above, this harness scores 4.8 points above its own
+first trials (95% interval −8 to +18). Fifteen tasks changed outcome between the two, 9 to a
+pass and 6 to a fail; two of the nine are the failures fixed, and the other 13 show how much
+one attempt per task varies. Claude Code scores 6.5 points above it (−2 to +16),
+which no longer separates them, and terminus-2 and mini-swe-agent 11.3 below it (−24 to +2,
+and −23 to +0). These comparisons cross two runs, so each harness's run-to-run variation is
+in them. The 62 trials came to about CNY 12.4; the cancelled one reported no tokens and is not
+in that.
 
 **The first run, 2026-10-18:** the same model and endpoint, 10 tasks × 2 attempts × 3
 harnesses, before Claude Code was added
@@ -970,9 +1001,9 @@ What the runs did and did not control for:
   DeepSeek's own Claude Code setup does the same. Everything else, thinking included, is
   Claude Code's default. terminus-2 and mini-swe-agent get the model's window and output
   limit registered in LiteLLM, without which LiteLLM asks for 4,096 output tokens.
-- **This harness's own settings.** It keeps its own 16,000 output tokens (more when a reply
-  is cut off: in these runs only mid tool call, now for any reply) and is told the 1M
-  window. It sends
+- **This harness's own settings.** It keeps its own 16,000 output tokens, raised when a
+  reply is cut off (only mid tool call before the fixes, any reply in the run after them),
+  and is told the 1M window. It sends
   `thinking: {"type": "adaptive"}`, its default, which DeepSeek accepts and does not
   document; terminus-2 and mini-swe-agent send none, which leaves DeepSeek's default,
   thinking on.
@@ -989,22 +1020,24 @@ What the runs did and did not control for:
   now marks its bash tool `"type": "custom"`, which DeepSeek's endpoint rejects.
   `integrations/harbor/mini_swe_agent.py` adds the package and runs mini-swe-agent's own
   `mini_textbased` configuration, which sends no tools.
-- **No retries**, so every token is in the count: Harbor deletes a retried attempt. Since
-  these runs, this harness makes a model call again when its stream breaks, and the broken
+- **No retries**, so every token is in the count: Harbor deletes a retried attempt. With
+  the fixes, this harness makes a model call again when its stream breaks, and the broken
   attempt's usage never arrives; a trial's metadata then counts those calls
-  (`uncounted_calls`), and the run's summary names them under the table.
+  (`uncounted_calls`), and the run's summary names them under its table. The run after the
+  fixes had none.
 - **Cost** is estimated from tokens at DeepSeek's off-peak list prices (CNY 1 per million
   uncached input tokens, 0.02 cached, 4 output). The 252 trials came to about CNY 50, the
-  first run's 60 to about CNY 6.5, and the 19 run without a thinking parameter to about
-  CNY 1.1.
+  first run's 60 to about CNY 6.5, the 19 run without a thinking parameter to about
+  CNY 1.1, and the 62 after the fixes to about CNY 12.4.
 
 Not run yet:
 
-- more than one attempt per task, which is what telling this harness apart from terminus-2
-  and mini-swe-agent would take;
+- more than one attempt per task, which is what telling these harnesses apart would take:
+  15 of this harness's 62 tasks changed outcome between its two trials;
 - the 16 tasks with longer limits;
 - other models (MiniMax-M2.7 is wired in as a second provider);
-- this harness again, now that the two failures above are fixed.
+- extract-moves-from-video for this harness with the fixes, since the runner cancelled
+  that trial.
 
 ### Any Anthropic-compatible endpoint
 
