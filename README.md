@@ -865,17 +865,64 @@ harbor run -d terminal-bench@2.0 \
   -a integrations.harbor.mini_claude_code:MiniClaudeCode -m anthropic/their-model-id
 ```
 
-The measurement it exists for is the same model three ways: on the public 2.0 board the
-same model has scored up to 21 points apart under different harnesses (Harbor Hub's copy of
-the board, 142 rows, not all verified). `.github/workflows/terminal-bench.yml` takes it on
-GitHub Actions, which has the Docker this machine lacks, beside Harbor's terminus-2 and
-mini-swe-agent on one model and one endpoint: started by hand only, one trial per job,
-Harbor 0.24.0, the 89 tasks of Terminal-Bench 2.0 pinned to one commit, ubuntu-24.04
-runners (4 CPUs, 16 GB).
+The measurement it exists for is the same model under several harnesses: on the public 2.0
+board the same model has scored up to 21 points apart under different harnesses (Harbor
+Hub's copy of the board, 142 rows, not all verified). `.github/workflows/terminal-bench.yml`
+takes it on GitHub Actions, which has the Docker this machine lacks, beside Harbor's agents
+for Claude Code, terminus-2 and mini-swe-agent on one model and one endpoint: started by
+hand only, one trial per job, Harbor 0.24.0, the 89 tasks of Terminal-Bench 2.0 pinned to
+one commit, ubuntu-24.04 runners (4 CPUs, 16 GB).
 
-**The first run, 2026-10-18:** DeepSeek-V4.1-Flash (`deepseek-flash`, thinking on by
-default) through DeepSeek's Anthropic-compatible endpoint, 10 tasks × 2 attempts × 3
-harnesses ([the run](https://github.com/liu-x27/mini-claude-code/actions/runs/39166341284)).
+**63 tasks, 2026-10-19:** DeepSeek-V4.1-Flash (`deepseek-flash`, thinking on by default)
+through DeepSeek's Anthropic-compatible endpoint, one attempt per task and harness
+([the run](https://github.com/liu-x27/mini-claude-code/actions/runs/39234894240)).
+
+| harness | passed | score, 95% CI over tasks | input tokens / trial (cached) | output tokens / trial | est. cost / trial | median time |
+|---|---|---|---|---|---|---|
+| Claude Code 2.1.292 | 55 / 63 | 87% (78–95) | 858k (828k) | 23k | CNY 0.14 | 1.7 min |
+| mini-claude-code | 48 / 63 | 76% (65–86) | 1,083k (1,059k) | 29k | CNY 0.16 | 2.0 min |
+| terminus-2 | 44 / 63 | 70% (59–81) | 380k (358k) | 60k | CNY 0.27 | 2.8 min |
+| mini-swe-agent | 44 / 63 | 70% (59–81) | 499k (478k) | 50k | CNY 0.23 | 2.0 min |
+
+Claude Code is ahead, and that is the one gap the run resolves. Paired over the same tasks,
+it scores 11 points above this harness (95% interval +2 to +21). terminus-2 and
+mini-swe-agent each score 6 points below this harness (−16 to +3), so the run does not
+separate it from them. All four passed 38 of the tasks and none passed 6, so the order comes
+from the other 19. On those, Claude Code passed 9 that this harness missed, and missed 2 that
+it passed. Five tasks were passed by Claude Code alone.
+
+Four of this harness's 15 misses were the harness's own failures, not the task's:
+
+- **A stream that broke partway.** Twice, DeepSeek's response stream broke after it had
+  started (the SDK reports `terminated`), and the run threw: on extract-moves-from-video and
+  polyglot-c-py. The SDK retries a request that fails before its response begins, but not
+  one that fails partway through, and the loop above it does not retry either. These are
+  the table's two errors.
+- **A reply cut off at max_tokens outside a tool call.** This harness asks for 16,000 output
+  tokens, and raises that only for a reply cut off in the middle of a tool call. A reply
+  that runs out first ends the run, and long thinking can do that. It happened on
+  adaptive-rejection-sampler and path-tracing-reverse.
+
+Claude Code passed two of those four tasks. Of the other eleven misses, three ran out of
+time and eight finished with the tests failing. Among the eight are primers outside the
+limits of the two DNA tasks, a peak fit off in one parameter (raman-fitting), and a vim
+macro file without `:wq`.
+
+The polyglot tasks failed as they did in the first run, on test binaries left beside the
+source. That happened in both of terminus-2's polyglot trials, both of mini-swe-agent's, and
+this harness's polyglot-c-py trial, which was the one cut off. Claude Code passed both
+tasks. mini-swe-agent's one error is the harness crashing after a command deleted its
+working directory (`os.getcwd()` raised); Harbor files it as a network error. Two of
+mini-swe-agent's trials passed after running out of time.
+
+The 252 trials came to about CNY 50 at DeepSeek's off-peak prices: 10.0 for this harness,
+8.6 for Claude Code, 17.0 for terminus-2 and 14.6 for mini-swe-agent. This harness sends the
+most input per trial, 98% of it cached, and writes less output than either terminus-2 or
+mini-swe-agent: 29k a trial, against 60k and 50k.
+
+**The first run, 2026-10-18:** the same model and endpoint, 10 tasks × 2 attempts × 3
+harnesses, before Claude Code was added
+([the run](https://github.com/liu-x27/mini-claude-code/actions/runs/39166341284)).
 
 | harness | passed | score, 95% CI over tasks | input tokens / trial (cached) | output tokens / trial | est. cost / trial | median time |
 |---|---|---|---|---|---|---|
@@ -893,27 +940,37 @@ server answering 404 (this harness once, mini-swe-agent once), and one is this h
 running out of chess-best-move's 900 s without writing its answer. No trial errored; one
 terminus-2 trial ran out of time and passed anyway.
 
-What the run did and did not control for:
+What the runs did and did not control for:
 
-- **The tasks.** The 10 are the seven of the benchmark's own 10-task sample whose reference
-  solution passes on the runner, and three drawn with `random.Random(20261018).sample` from
-  the 36 other tasks with the same 900 s limit whose solution passes too:
-  hf-model-inference, polyglot-rust-c and db-wal-recovery. Run on all 89, the reference
-  solutions pass 79 on this runner. Of the other ten, the two QEMU tasks' Debian 11 images
-  can no longer install packages, two solutions run past their limits on 4 CPUs, and six
-  fail their tests or leave no output.
-- **Each harness as it runs on a model it knows.** terminus-2 and mini-swe-agent get the
-  model's window and output limit registered in LiteLLM, without which LiteLLM asks for
-  4,096 output tokens. This harness keeps its own 16,000 (more when a reply is cut off
-  mid tool call) and is told the 1M window. It sends `thinking: {"type": "adaptive"}`, its
-  default, which DeepSeek accepts and does not document; the other two send
-  none, which leaves DeepSeek's default, thinking on. Sending none from this harness as
-  well (`AGENT_THINKING=omit`, the workflow's `thinking` input) did not raise its output:
-  [a second run](https://github.com/liu-x27/mini-claude-code/actions/runs/39177686519) of
-  the same tasks and attempts wrote 11k output tokens per trial against 13k, with 266k
-  input (257k cached), and passed 16 of 19, −5 points paired over tasks (−20 to +10); the
-  twentieth never started, as Docker was not running on its runner. So the thinking
-  parameter is not why this harness's output per trial is about half the others'.
+- **The tasks.** Run on all 89, the reference solutions pass 79 on this runner. Of the other
+  ten, the two QEMU tasks' Debian 11 images can no longer install packages, two solutions
+  run past their limits on 4 CPUs, and six fail their tests or leave no output.
+  - **The 63.** These are every one of the 79 whose agent time limit is at most 1,800 s.
+    The 16 with longer limits, up to 12,000 s, are left out, which also keeps the 4 × 63
+    trials inside the 256 jobs one run can hold.
+  - **The first run's 10.** Seven are the tasks in the benchmark's own 10-task sample whose
+    reference solution passes. The other three were drawn with
+    `random.Random(20261018).sample` from the 36 other passing tasks with the same 900 s
+    limit: hf-model-inference, polyglot-rust-c and db-wal-recovery.
+- **Each harness as it runs on a model it knows.** Claude Code runs as Harbor's own
+  claude-code agent, which points every model tier at the one model. The model is named with
+  `[1m]` on the end, which is how Claude Code is told a model has a 1M-token window;
+  DeepSeek's own Claude Code setup does the same. Everything else, thinking included, is
+  Claude Code's default. terminus-2 and mini-swe-agent get the model's window and output
+  limit registered in LiteLLM, without which LiteLLM asks for 4,096 output tokens.
+- **This harness's own settings.** It keeps its own 16,000 output tokens (more when a reply
+  is cut off mid tool call) and is told the 1M window. It sends
+  `thinking: {"type": "adaptive"}`, its default, which DeepSeek accepts and does not
+  document; terminus-2 and mini-swe-agent send none, which leaves DeepSeek's default,
+  thinking on.
+- **Sending no thinking parameter.** With none from this harness as well
+  (`AGENT_THINKING=omit`, the workflow's `thinking` input), its output did not rise.
+  [A run](https://github.com/liu-x27/mini-claude-code/actions/runs/39177686519) of the
+  first run's tasks and attempts that way wrote 11k output tokens per trial against 13k,
+  with 266k input (257k cached). It passed 16 of 19, −5 points paired over tasks (−20 to
+  +10); the twentieth trial never started, as Docker was not running on its runner. So the
+  thinking parameter is not why this harness writes about half the output of terminus-2
+  and mini-swe-agent.
 - **mini-swe-agent ran in its text-based mode.** Harbor's install leaves out the `mcp`
   package that today's LiteLLM imports, and in mini-swe-agent's tool-calling mode LiteLLM
   now marks its bash tool `"type": "custom"`, which DeepSeek's endpoint rejects.
@@ -921,12 +978,17 @@ What the run did and did not control for:
   `mini_textbased` configuration, which sends no tools.
 - **No retries**, so every token is in the count: Harbor deletes a retried attempt.
 - **Cost** is estimated from tokens at DeepSeek's off-peak list prices (CNY 1 per million
-  uncached input tokens, 0.02 cached, 4 output); the 60 trials came to about CNY 6.5, and
-  the second run's 19 to about CNY 1.1.
+  uncached input tokens, 0.02 cached, 4 output). The 252 trials came to about CNY 50, the
+  first run's 60 to about CNY 6.5, and the 19 run without a thinking parameter to about
+  CNY 1.1.
 
-Not run yet: more tasks or attempts, which telling the three apart needs; other models
-(MiniMax-M2.7 is wired in as a second provider); Harbor's claude-code agent as a fourth
-harness on the same endpoint.
+Not run yet:
+
+- more than one attempt per task, which is what telling this harness apart from terminus-2
+  and mini-swe-agent would take;
+- the 16 tasks with longer limits;
+- other models (MiniMax-M2.7 is wired in as a second provider);
+- this harness again, after the two failures above are fixed.
 
 ### Any Anthropic-compatible endpoint
 
@@ -985,7 +1047,7 @@ under piped input — has been exercised end to end against an Anthropic-compati
 endpoint (MiniMax M2), and again after the web server moved onto `Agent` — CLI and
 browser, through both clients — against a local Ollama. It is not in CI: it needs a live
 model. On Terminal-Bench it has run in containers on GitHub Actions, against
-DeepSeek-V4.1-Flash, beside two other harnesses: see On Terminal-Bench, through Harbor. Cost figures
+DeepSeek-V4.1-Flash, beside three other harnesses, Claude Code among them: see On Terminal-Bench, through Harbor. Cost figures
 come from the table in `src/utils/cost.ts`, which prices Anthropic models; any other
 model is reported as cost unknown rather than priced as Claude Opus 5, which it used to be.
 
