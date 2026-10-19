@@ -143,9 +143,13 @@ class ScriptsTest(unittest.TestCase):
             done = run("--agents", "oracle, terminus-2", "--tasks", "sample", "--attempts", "2")
             self.assertEqual(done.returncode, 0, done.stderr)
             ids = [m["id"] for m in json.loads(done.stdout)]
-            self.assertEqual(ids, ["oracle__b__1", "oracle__b__2", "terminus-2__b__1", "terminus-2__b__2"])
+            self.assertEqual(ids, ["oracle__b__1", "terminus-2__b__1", "oracle__b__2", "terminus-2__b__2"])
+            # Task by task, every agent's trial of a task together, so a run cut short loses whole tasks.
+            done = run("--agents", "mini-claude-code,claude-code", "--tasks", "a c")
+            ids = [m["id"] for m in json.loads(done.stdout)]
+            self.assertEqual(ids, ["mini-claude-code__a__1", "claude-code__a__1", "mini-claude-code__c__1", "claude-code__c__1"])
             self.assertNotEqual(run("--agents", "oracle", "--tasks", "a nope").returncode, 0)
-            self.assertNotEqual(run("--agents", "claude-code", "--tasks", "all").returncode, 0)
+            self.assertNotEqual(run("--agents", "codex", "--tasks", "all").returncode, 0)
 
     def test_scrub_redacts_text_and_deletes_binaries(self):
         secret = "sk-api-THIS-IS-NOT-A-REAL-KEY-0123456789"

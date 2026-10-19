@@ -27,7 +27,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-ORDER = ("oracle", "mini-claude-code", "terminus-2", "mini-swe-agent")
+ORDER = ("oracle", "mini-claude-code", "claude-code", "terminus-2", "mini-swe-agent")
 API_ERRORS = {"NetworkConnectionError", "AgentAuthenticationError", "ModelNotFoundError"}
 VERIFIER_ERRORS = {"VerifierTimeoutError", "RewardFileNotFoundError", "RewardFileEmptyError", "VerifierOutputParseError"}
 

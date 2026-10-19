@@ -14,7 +14,7 @@ import json
 import sys
 import urllib.request
 
-AGENTS = ("oracle", "mini-claude-code", "terminus-2", "mini-swe-agent")
+AGENTS = ("oracle", "mini-claude-code", "claude-code", "terminus-2", "mini-swe-agent")
 # GitHub's limit on the jobs one matrix can expand to.
 MAX_JOBS = 256
 
@@ -49,11 +49,14 @@ def main() -> int:
     if args.attempts < 1:
         return _fail("attempts must be at least 1")
 
+    # Task by task, with every agent's trial of an attempt next to the others': GitHub starts jobs
+    # roughly in this order, so a run cut short (a key out of credit, a cancel) loses whole tasks for
+    # every agent instead of one agent's last tasks, and the comparison stays paired.
     matrix = [
         {"agent": agent, "task": task, "attempt": attempt, "id": f"{agent}__{task}__{attempt}"}
-        for agent in agents
         for task in tasks
         for attempt in range(1, args.attempts + 1)
+        for agent in agents
     ]
     if len(matrix) > MAX_JOBS:
         return _fail(f"{len(matrix)} jobs; one run can have at most {MAX_JOBS}")

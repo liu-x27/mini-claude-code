@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       agents:
-        description: "Comma-separated: oracle, mini-claude-code, terminus-2, mini-swe-agent"
+        description: "Comma-separated: oracle, mini-claude-code, claude-code, terminus-2, mini-swe-agent"
         default: oracle
       tasks:
         description: '"sample" (the benchmark''s own 10), "all" (89), or task names'
@@ -60,6 +60,9 @@ env:
   # harbor-framework/terminal-bench-2 (69671fba, 2025-10-31): the tasks the public 2.0 board ran.
   # Harbor Hub's terminal-bench@2.0 resolves to the same commit; this way it cannot move.
   REGISTRY_URL: https://raw.githubusercontent.com/harbor-framework/harbor/b53b8134e1241686dca7759af188f987ecc48e8b/registry.json
+  # Claude Code as Harbor installs it, pinned to Anthropic's stable channel on 2026-10-19 rather than
+  # whatever is newest on the day of a run.
+  CLAUDE_CODE_VERSION: 2.1.292
 
 jobs:
   plan:
@@ -222,6 +225,14 @@ jobs:
               args+=(-a integrations.harbor.mini_claude_code:MiniClaudeCode -m "anthropic/$MODEL"
                 --ak "ref=$GITHUB_SHA" --ak "context_window=$WINDOW" --ak "thinking=$THINKING"
                 --allow-agent-host "$host") ;;
+            claude-code)
+              # Harbor's own claude-code agent, which reads the key and the endpoint from this process
+              # and maps every model tier to the one given. The [1m] suffix is how Claude Code is told a
+              # model has a 1M-token window (DeepSeek's own setup for it uses it); its effort and the
+              # rest are left at Claude Code's defaults, as the other harnesses' are.
+              cc_model="$MODEL"
+              if [ "$WINDOW" -ge 1000000 ]; then cc_model="$MODEL[1m]"; fi
+              args+=(-a claude-code -m "$cc_model" --ak "version=$CLAUDE_CODE_VERSION" --allow-agent-host "$host") ;;
             terminus-2)
               # Runs on this machine and drives the container through tmux, so the key never enters it.
               args+=(-a terminus-2 -m "anthropic/$MODEL" --ak "api_base=$ENDPOINT" --ak "model_info=$info") ;;
