@@ -197,10 +197,12 @@ export function useChat(
                   break;
 
                 case "turn_retry":
-                  // The reply was cut off mid tool call and is being asked
-                  // again; what it streamed is superseded by the retry.
+                  // The call is being made again (the reply was cut off mid tool
+                  // call, or its connection broke): what it streamed is superseded
+                  // by the retry, and the note says why the text started over.
                   last.content = last.content.slice(0, last.turnStart ?? 0);
                   if (last.thinking !== undefined) last.thinking = last.thinking.slice(0, last.thinkingStart ?? 0);
+                  last.notes = [...(last.notes ?? []), `The reply started over: ${data["reason"] as string}.`];
                   break;
 
                 case "tool_start": {

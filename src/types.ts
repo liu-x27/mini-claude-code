@@ -233,6 +233,15 @@ export interface AgentConfig {
   maxTokens?: number;
 
   /**
+   * A model call whose connection breaks — partway through its reply, which no SDK retries,
+   * or before the reply begins, once the SDK's own retries are spent — is made again, up to
+   * `attempts` times, after a pause of `delayMs` that doubles each time. Default
+   * `{ attempts: 3, delayMs: 1000 }`; `attempts: 0` never makes it again. A call that was
+   * aborted, or that got an answer with an HTTP status, is never made again here.
+   */
+  reconnect?: { attempts?: number; delayMs?: number };
+
+  /**
    * The `thinking` parameter every request sends. Unset, it is the one
    * `AGENT_THINKING` names (adaptive, enabled, disabled or omit), and
    * `{ type: "adaptive" }` when that is unset too. `null` sends none, which
@@ -356,6 +365,11 @@ export interface AgentUsage {
   cacheReadTokens: number;
   /** Null when the model has no price in `utils/cost.ts`, rather than someone else's price. */
   estimatedCostUsd: number | null;
+  /**
+   * Model calls whose stream broke before the usage arrived, so their tokens — billed or not —
+   * are in none of the counts above, which are then a lower bound. Absent when there were none.
+   */
+  uncountedCalls?: number;
 }
 
 export interface RunOptions {
@@ -422,8 +436,13 @@ export type AgentEvent =
       durationMs: number;
     }
   | { type: "tool_retry"; toolUseId: string; toolName: string; error: string; verdict: RetryVerdict }
-  /** The reply was cut off by max_tokens in the middle of a tool call; the turn is asked again with more room. */
-  | { type: "turn_retry"; turn: number; reason: string; maxTokens: number }
+  /**
+   * The turn's model call is made again, and whatever it streamed so far is void: its reply was
+   * cut off by max_tokens in the middle of a tool call (asked again with more room, `maxTokens`),
+   * or its connection broke (asked again after a pause). For a broken connection the usage never
+   * arrived, so `usageUnknown` is true and that attempt's tokens are counted nowhere.
+   */
+  | { type: "turn_retry"; turn: number; reason: string; maxTokens: number; usageUnknown?: true }
   /** The history was replaced by a summary; `transcript` is where the full one was archived. */
   | { type: "compacted"; turn: number; promptTokens: number; transcript: string | undefined }
   /** The model rewrote its task list. */

@@ -539,6 +539,12 @@ function attachRenderer(agent: Agent): void {
         console.log(chalk.gray(`   ${status} in ${event.durationMs}ms`));
         break;
       }
+      case "turn_retry":
+        // What it streamed is already on the screen and cannot be taken back,
+        // so say that the reply starts over before the new one runs on from it.
+        endStream();
+        console.log(chalk.yellow(`↻  ${event.reason}: the reply starts over`));
+        break;
       case "todos":
         endStream();
         for (const t of event.todos) {
@@ -572,10 +578,11 @@ function attachRenderer(agent: Agent): void {
 
 function formatUsage(usage: AgentUsage): string {
   const total = usage.inputTokens + usage.outputTokens;
+  const uncounted = usage.uncountedCalls ? ` · ${usage.uncountedCalls} broken call(s) not counted` : "";
   return chalk.gray(
     `[${total} tokens · in ${usage.inputTokens} / out ${usage.outputTokens}` +
       ` · cache ${usage.cacheReadTokens} read` +
-      ` · ${usd(usage.estimatedCostUsd)}]`,
+      ` · ${usd(usage.estimatedCostUsd)}${uncounted}]`,
   );
 }
 
@@ -636,6 +643,7 @@ class ReplState {
   totalInputTokens = 0;
   totalOutputTokens = 0;
   totalCostUsd: number | null = 0;
+  totalUncountedCalls = 0;
 
   constructor(opts: CliOptions) {
     this.model = opts.model;
@@ -768,6 +776,7 @@ class ReplState {
     this.totalInputTokens += usage.inputTokens;
     this.totalOutputTokens += usage.outputTokens;
     this.totalCostUsd = addCost(this.totalCostUsd, usage.estimatedCostUsd);
+    this.totalUncountedCalls += usage.uncountedCalls ?? 0;
     this.sessionId = sessionId;
   }
 }
@@ -812,6 +821,7 @@ async function handleCommand(input: string, state: ReplState): Promise<boolean> 
             cacheCreationTokens: 0,
             cacheReadTokens: 0,
             estimatedCostUsd: state.totalCostUsd,
+            ...(state.totalUncountedCalls > 0 ? { uncountedCalls: state.totalUncountedCalls } : {}),
           }),
       );
       return true;
@@ -986,6 +996,8 @@ async function runHeadless(state: ReplState, prompt: string, format: "json" | "s
         output_tokens: result.usage.outputTokens,
         cache_creation_input_tokens: result.usage.cacheCreationTokens,
         cache_read_input_tokens: result.usage.cacheReadTokens,
+        // Calls whose stream broke before their usage arrived: the counts above leave them out.
+        uncounted_calls: result.usage.uncountedCalls ?? 0,
       },
       total_cost_usd: result.usage.estimatedCostUsd,
     });

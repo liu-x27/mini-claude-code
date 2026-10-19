@@ -231,11 +231,18 @@ characters (`AGENT_MAX_TOOL_OUTPUT`), start and end kept; the whole text is save
 file the cut names, so the middle is one Read away (Read itself says to use `offset`). A reply that max_tokens cuts off
 in the middle of a tool call is asked again with twice the room, up to 64,000; one that
 stays cut off, or ends in a refusal, is neither run nor saved, since a `tool_use` without
-its result makes every later request fail. `run(prompt, { signal })` can be aborted, and
+its result makes every later request fail. A call whose connection breaks — partway
+through its reply, which the SDK does not retry, or before the reply, once the SDK's own
+retries are spent — is made again up to three times, after 1, 2 and 4 seconds
+(`reconnect`); one refused with an HTTP status, or aborted, is not. A broken reply's usage
+never arrives, so its tokens are in no count, and the run's usage says how many calls that
+left out (`uncountedCalls`; `uncounted_calls` in `-p`'s JSON). `run(prompt, { signal })` can be aborted, and
 saves the session up to that point. Consumers subscribe with `agent.on(event => …)` and
 get `session`, `tool_request` → `tool_denied` or `tool_start` → `tool_end` (all keyed by
 the call's id), `turn_start`, `turn_retry`, `turn_end` and `done`, plus `text_delta` /
-`thinking_delta` when `stream: true`.
+`thinking_delta` when `stream: true`. `turn_retry` means whatever the call streamed so far
+is void: the web client takes that text back, and the terminal and an ACP editor, which
+cannot, are told the reply starts over.
 
 **The model** (`src/model/`) is behind a `ModelClient`: `AnthropicClient` by default,
 `OpenAICompatibleClient` for any Chat Completions endpoint, or a scripted one in tests.
@@ -896,8 +903,8 @@ Four of this harness's 15 misses were the harness's own failures, not the task's
 - **A stream that broke partway.** Twice, DeepSeek's response stream broke after it had
   started (the SDK reports `terminated`), and the run threw: on extract-moves-from-video and
   polyglot-c-py. The SDK retries a request that fails before its response begins, but not
-  one that fails partway through, and the loop above it does not retry either. These are
-  the table's two errors.
+  one that fails partway through, and the loop above it did not retry either. These are
+  the table's two errors. The loop now makes such a call again (How it works, above).
 - **A reply cut off at max_tokens outside a tool call.** This harness asks for 16,000 output
   tokens, and raises that only for a reply cut off in the middle of a tool call. A reply
   that runs out first ends the run, and long thinking can do that. It happened on
@@ -976,7 +983,10 @@ What the runs did and did not control for:
   now marks its bash tool `"type": "custom"`, which DeepSeek's endpoint rejects.
   `integrations/harbor/mini_swe_agent.py` adds the package and runs mini-swe-agent's own
   `mini_textbased` configuration, which sends no tools.
-- **No retries**, so every token is in the count: Harbor deletes a retried attempt.
+- **No retries**, so every token is in the count: Harbor deletes a retried attempt. Since
+  these runs, this harness makes a model call again when its stream breaks, and the broken
+  attempt's usage never arrives; a trial's metadata then counts those calls
+  (`uncounted_calls`), and the run's summary names them under the table.
 - **Cost** is estimated from tokens at DeepSeek's off-peak list prices (CNY 1 per million
   uncached input tokens, 0.02 cached, 4 output). The 252 trials came to about CNY 50, the
   first run's 60 to about CNY 6.5, and the 19 run without a thinking parameter to about

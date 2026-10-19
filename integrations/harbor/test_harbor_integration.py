@@ -207,11 +207,14 @@ class ScriptsTest(unittest.TestCase):
 
     def test_summary_scores_by_task_and_names_what_is_missing(self):
         def trial(job, agent, task, reward, exception=None, tokens=(1000, 800, 50)):
+            # One of mini-claude-code's trials made a call again after its stream broke.
+            metadata = {"uncounted_calls": 2} if job == "mini-claude-code__a__1" else {}
             return {
                 "trial_name": f"{task}__x", "task_name": task, "agent_info": {"name": agent, "version": "1"},
                 "verifier_result": {"rewards": {"reward": reward}},
                 "exception_info": {"exception_type": exception} if exception else None,
-                "agent_result": {"n_input_tokens": tokens[0], "n_cache_tokens": tokens[1], "n_output_tokens": tokens[2]},
+                "agent_result": {"n_input_tokens": tokens[0], "n_cache_tokens": tokens[1], "n_output_tokens": tokens[2],
+                                 "metadata": metadata},
             }
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -238,6 +241,10 @@ class ScriptsTest(unittest.TestCase):
             self.assertAlmostEqual(trials[0]["est_cost"], (200 * 2.1 + 800 * 0.42 + 50 * 8.4) / 1e6)
             self.assertIn("| a | 1/1 | 1/2 T |", markdown)
             self.assertIn("| b | 1/1 E | 0/1 |", markdown)
+            # Calls whose usage never arrived are named, not counted as zero tokens without a word.
+            self.assertEqual(data["agents"]["mini-claude-code"]["uncounted_calls"], 2)
+            self.assertIn("mini-claude-code: 2 model call(s) broke off before their usage arrived", markdown)
+            self.assertNotIn("terminus-2: 0 model call", markdown)
             # Why a trial failed is on the summary page, not only in the artifact.
             self.assertIn("terminus-2__b__1: failed: finished, tests fail", markdown)
             self.assertIn("FAILED test_output", markdown)
@@ -378,7 +385,8 @@ class AdapterTest(unittest.TestCase):
                 {"type": "turn_end", "turn": 1, "usage": usage(10, 7, 5, 0)},
                 {"type": "turn_end", "turn": 2, "usage": usage(20, 13, 0, 100)},
                 {"type": "result", "subtype": "success", "stop_reason": "end_turn", "session_id": "s-1", "num_turns": 2,
-                 "usage": {"input_tokens": 30, "output_tokens": 20, "cache_creation_input_tokens": 5, "cache_read_input_tokens": 100},
+                 "usage": {"input_tokens": 30, "output_tokens": 20, "cache_creation_input_tokens": 5, "cache_read_input_tokens": 100,
+                           "uncounted_calls": 1},
                  "total_cost_usd": None},
             ]
             (logs / "events.jsonl").write_text("".join(json.dumps(e) + "\n" for e in events))
@@ -388,6 +396,7 @@ class AdapterTest(unittest.TestCase):
             self.assertEqual((context.n_input_tokens, context.n_cache_tokens, context.n_output_tokens), (135, 100, 20))
             self.assertIsNone(context.cost_usd)
             self.assertEqual(context.metadata["stop_reason"], "end_turn")
+            self.assertEqual(context.metadata["uncounted_calls"], 1)
             trajectory = Trajectory.model_validate_json((logs / "trajectory.json").read_text())
             self.assertEqual(len(trajectory.steps), 3)
 

@@ -87,8 +87,29 @@ class AcpAgent implements acp.Agent {
       session.registry,
     );
     let streamed = false;
-    agent.on((event) => {
-      if (event.type === "text_delta") streamed = true;
+    // What the call in progress has streamed so far, if anything: an editor cannot take
+    // a chunk back, so when the call is made again it is told the reply starts over.
+    let partial: "text" | "thinking" | undefined;
+    agent.on(async (event) => {
+      if (event.type === "text_delta") {
+        streamed = true;
+        partial = "text";
+      } else if (event.type === "thinking_delta") {
+        partial ??= "thinking";
+      } else if (event.type === "turn_start") {
+        partial = undefined;
+      } else if (event.type === "turn_retry") {
+        if (partial) {
+          await this.conn.sessionUpdate({
+            sessionId: params.sessionId,
+            update: {
+              sessionUpdate: partial === "text" ? "agent_message_chunk" : "agent_thought_chunk",
+              content: { type: "text", text: `\n\n[${event.reason}: the reply starts over]\n\n` },
+            },
+          });
+        }
+        partial = undefined;
+      }
       return this.forward(params.sessionId, event);
     });
 

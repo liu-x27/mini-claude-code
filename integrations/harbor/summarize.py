@@ -75,6 +75,7 @@ def _row(result: dict[str, Any], job: str, trial_dir: Path | None = None) -> dic
         "cache_write_tokens": metadata.get("cache_creation_input_tokens"),
         "output_tokens": context.get("n_output_tokens"),
         "reported_cost_usd": context.get("cost_usd"),
+        "uncounted_calls": metadata.get("uncounted_calls") or 0,
         "stop_reason": metadata.get("stop_reason"),
         "agent_seconds": _seconds(result.get("agent_execution")),
         "trial_seconds": _seconds({"started_at": result.get("started_at"), "finished_at": result.get("finished_at")}),
@@ -235,6 +236,7 @@ def summarize(trials: list[dict[str, Any]], prices, currency: str, peak: str | N
             "mean_cost": statistics.mean(costs) if costs else None,
             "total_cost": sum(costs) if costs else None,
             "median_agent_seconds": statistics.median(times) if times else None,
+            "uncounted_calls": sum(r.get("uncounted_calls") or 0 for r in rows),
             "categories": dict(Counter(r["category"] for r in rows)),
             "per_task": per_task,
         }
@@ -245,6 +247,14 @@ def summarize(trials: list[dict[str, Any]], prices, currency: str, peak: str | N
             f"| {_k(aggregate['mean_input_tokens'])} ({_k(aggregate['mean_cached_tokens'])}) | {_k(aggregate['mean_output_tokens'])} "
             f"| {_money(aggregate['mean_cost'])} | {_money(aggregate['total_cost'])} | {_minutes(aggregate['median_agent_seconds'])} |"
         )
+    for agent in agents:
+        uncounted = aggregates[agent]["uncounted_calls"]
+        if uncounted:
+            # mini-claude-code makes a call again when its stream breaks; the broken one's usage never arrived.
+            out.append(
+                f"\n{agent}: {uncounted} model call(s) broke off before their usage arrived and were made again; "
+                "their tokens are in none of the counts or costs above."
+            )
 
     if len([a for a in agents if a != "oracle"]) > 1:
         models = [a for a in agents if a != "oracle"]

@@ -181,6 +181,8 @@ class MiniClaudeCode(BaseInstalledAgent):
             "stop_reason": result.get("stop_reason") or result.get("subtype"),
             "num_turns": result.get("num_turns"),
             "tool_calls": result.get("tool_calls"),
+            # Model calls whose stream broke before their usage arrived, made again: the token counts leave them out.
+            "uncounted_calls": int((result.get("usage") or {}).get("uncounted_calls") or 0),
         }
 
         session_id = result.get("session_id") or next(

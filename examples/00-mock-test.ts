@@ -14,7 +14,9 @@ import { FileEditTool } from "../src/tools/file-edit.js";
 import { GlobTool } from "../src/tools/glob.js";
 import { buildRgArgs, GrepTool } from "../src/tools/grep.js";
 import { decodeOutput, resolveShell } from "../src/tools/shell.js";
-import { buildParams } from "../src/model/anthropic.js";
+import { AnthropicClient, buildParams } from "../src/model/anthropic.js";
+import { transientFailure } from "../src/model/transient.js";
+import { APIConnectionError, APIError, APIUserAbortError } from "@anthropic-ai/sdk";
 import type { HookHandler, HookOutput } from "../src/hooks/index.js";
 import { connectMcpServers } from "../src/mcp/index.js";
 import * as acp from "@agentclientprotocol/sdk";
@@ -53,7 +55,7 @@ import { Agent } from "../src/agent.js";
 import { Tool } from "../src/tools/base.js";
 import { OpenAICompatibleClient, toOpenAIMessages } from "../src/model/openai.js";
 import { REASONING_SIGNATURE } from "../src/model/types.js";
-import type { ModelClient, ModelRequest, ModelResponse } from "../src/model/types.js";
+import type { ModelClient, ModelDelta, ModelRequest, ModelResponse } from "../src/model/types.js";
 import type Anthropic from "@anthropic-ai/sdk";
 import { renderMarkdown } from "../client/src/lib/markdown.js";
 import * as os from "node:os";
@@ -709,16 +711,18 @@ const calls = (...uses: Array<[id: string, name: string, input: Record<string, u
   usage: noUsage,
 });
 
-/** 按剧本逐轮回复的模型；记下每次请求时的对话，供断言用 */
+/** 按剧本逐轮回复的模型；记下每次请求时的对话，供断言用。剧本里的函数也拿得到 onDelta，可以先流出几段再出事 */
 class ScriptedClient implements ModelClient {
   readonly name = "scripted";
   readonly seen: ModelRequest["messages"][] = [];
-  constructor(private script: Array<ModelResponse | ((req: ModelRequest) => Promise<ModelResponse>)>) {}
-  async create(request: ModelRequest): Promise<ModelResponse> {
+  constructor(
+    private script: Array<ModelResponse | ((req: ModelRequest, onDelta: (d: ModelDelta) => Promise<void>) => Promise<ModelResponse>)>,
+  ) {}
+  async create(request: ModelRequest, onDelta: (d: ModelDelta) => Promise<void>): Promise<ModelResponse> {
     this.seen.push(JSON.parse(JSON.stringify(request.messages)));
     const next = this.script.shift();
     if (!next) throw new Error("剧本已用完，循环多跑了一轮");
-    return typeof next === "function" ? next(request) : next;
+    return typeof next === "function" ? next(request, onDelta) : next;
   }
 }
 
@@ -1480,6 +1484,157 @@ await checkAsync("第 2 轮模型调用失败：第 1 轮已存盘；下一次�
   if (!note.includes("ended early") || !note.includes("529")) throw new Error(`续跑时的提示: ${JSON.stringify(turn.content)}`);
   if (blocks[1]?.type !== "text" || blocks[1].text !== "continue") throw new Error("用户的话应该原样跟在提示后面");
   if ((await sessions.load(sessionId))?.metadata.interrupted) throw new Error("续跑成功后中断标记应该清掉");
+});
+
+await checkAsync("流在回复中途断开（SDK 报 terminated）：停一下重问；已流出的半句作废并说明；那次的用量记为未知；4xx、中止不重问；次数有上限", async () => {
+  // Terminal-Bench 上 DeepSeek 的流两次中途断开，SDK 只重试响应开始之前的失败，修之前整个 run 抛错退出（extract-moves-from-video、polyglot-c-py）。
+  // 用真的 AnthropicClient 对着假端点，掐断的是真连接，错误长什么样由 SDK 和 undici 决定。剧本：broken = 流出两段字后掐断；
+  // hang = 流出一段后不再动；400 = 请求本身有错；其余正常答完
+  const frame = (event: string, data: Record<string, unknown>) => `event: ${event}\ndata: ${JSON.stringify({ type: event, ...data })}\n\n`;
+  const head =
+    frame("message_start", { message: { id: "m", type: "message", role: "assistant", model: "fake", content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 7, output_tokens: 1 } } }) +
+    frame("content_block_start", { index: 0, content_block: { type: "text", text: "" } });
+  const say = (text: string) => frame("content_block_delta", { index: 0, delta: { type: "text_delta", text } });
+  const plan: string[] = [];
+  let requests = 0;
+  // 读计数要经过函数：直接读 requests，TS 会按前面的比较把它收窄成字面量
+  const asked = () => requests;
+  const fake = http.createServer((req, res) => {
+    req.resume();
+    req.on("end", () => {
+      requests++;
+      const step = plan.shift();
+      if (step === "400") {
+        res.writeHead(400, { "content-type": "application/json" });
+        res.end(JSON.stringify({ type: "error", error: { type: "invalid_request_error", message: "messages.0: bad request" } }));
+        return;
+      }
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.write(head + say("half "));
+      if (step === "hang") return;
+      if (step === "overloaded") {
+        res.end(frame("error", { error: { type: "overloaded_error", message: "Overloaded" } }));
+        return;
+      }
+      if (step === "early") {
+        res.end();
+        return;
+      }
+      if (step === "broken") {
+        setTimeout(() => res.write(say("a reply")), 10);
+        setTimeout(() => res.socket?.destroy(), 40);
+        return;
+      }
+      res.end(
+        say("whole answer") +
+          frame("content_block_stop", { index: 0 }) +
+          frame("message_delta", { delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: 5 } }) +
+          frame("message_stop", {}),
+      );
+    });
+  });
+  await new Promise<void>((r) => fake.listen(0, "127.0.0.1", r));
+  const client = new AnthropicClient({ apiKey: "test", baseURL: `http://127.0.0.1:${(fake.address() as { port: number }).port}` });
+  const start = (steps: string[], config: Omit<AgentConfig, "client"> = {}) => {
+    plan.splice(0, plan.length, ...steps);
+    requests = 0;
+    return scriptedAgent(client, { stream: true, reconnect: { attempts: 3, delayMs: 5 }, ...config });
+  };
+  const deltas = (events: AgentEvent[]) => events.map((e) => (e.type === "text_delta" ? e.delta : e.type === "turn_retry" ? "|retry|" : "")).join("");
+  try {
+    // 断一次：重问一次就答完；先流出的半句后面紧跟 turn_retry，前端据此作废它
+    const once = start(["broken"]);
+    const result = await once.agent.run("go");
+    if (result.stopReason !== "end_turn" || result.text !== "half whole answer" || asked() !== 2) {
+      throw new Error(`结局 ${result.stopReason} / ${JSON.stringify(result.text)}，请求 ${asked()} 次`);
+    }
+    if (deltas(once.events) !== "half a reply|retry|half whole answer") throw new Error(`流出的顺序: ${deltas(once.events)}`);
+    const retry = once.events.find((e): e is Extract<AgentEvent, { type: "turn_retry" }> => e.type === "turn_retry");
+    if (!retry?.reason.includes("terminated") || retry.usageUnknown !== true) throw new Error(`turn_retry: ${JSON.stringify(retry)}`);
+    // 断掉那次没有用量可记：不当作 0 悄悄算进去，而是记一次“未计入”的调用
+    const u = result.usage;
+    if (u.inputTokens !== 7 || u.outputTokens !== 5 || u.uncountedCalls !== 1) throw new Error(`用量: ${JSON.stringify(u)}`);
+    const turnEnd = once.events.find((e): e is Extract<AgentEvent, { type: "turn_end" }> => e.type === "turn_end");
+    if (turnEnd?.usage.uncountedCalls !== 1) throw new Error(`turn_end 的用量: ${JSON.stringify(turnEnd?.usage)}`);
+
+    // 流里来了 overloaded_error（529 在流里的样子），或者没到 message_stop 就干净地结束了：同样是中途断开，同样重问
+    const odd = start(["overloaded", "early"]);
+    const oddResult = await odd.agent.run("go");
+    const reasons = odd.events.flatMap((e) => (e.type === "turn_retry" ? [e.reason] : [])).join(" | ");
+    if (oddResult.text !== "half whole answer" || asked() !== 3 || !reasons.includes("overloaded_error") || !reasons.includes("stream ended without")) {
+      throw new Error(`结局 ${JSON.stringify(oddResult.text)}，请求 ${asked()} 次，原因 ${reasons}`);
+    }
+
+    // 一直断：重问 3 次为止，然后照常抛错
+    const always = start(["broken", "broken", "broken", "broken"]);
+    const err = await always.agent.run("go").then(() => "", (e: Error) => e.message);
+    const retries = always.events.filter((e) => e.type === "turn_retry").length;
+    if (!err.includes("terminated") || asked() !== 4 || retries !== 3) throw new Error(`错误 ${err}，请求 ${asked()} 次，重问 ${retries} 次`);
+
+    // 4xx 是请求本身的问题，再问也一样：不重问
+    const bad = start(["400"]);
+    const badErr = await bad.agent.run("go").then(() => "", (e: Error) => e.message);
+    if (!badErr.includes("400") || asked() !== 1 || bad.events.some((e) => e.type === "turn_retry")) {
+      throw new Error(`400：${badErr}，请求 ${asked()} 次`);
+    }
+
+    // 中止：流到一半被叫停，算中止，不重问
+    const controller = new AbortController();
+    const stopped = start(["hang"]);
+    stopped.agent.on((e) => {
+      if (e.type === "text_delta") controller.abort();
+    });
+    const aborted = await stopped.agent.run("go", { signal: controller.signal });
+    if (aborted.stopReason !== "aborted" || asked() !== 1 || stopped.events.some((e) => e.type === "turn_retry")) {
+      throw new Error(`中止：${aborted.stopReason}，请求 ${asked()} 次`);
+    }
+  } finally {
+    fake.closeAllConnections();
+    await new Promise((r) => fake.close(r));
+  }
+
+  // 分类看的是错误的形状，用 SDK 自己的错误类：它重试过仍连不上的算；带 HTTP 状态码的回答都不算
+  // （429、529 SDK 已经重试过，400 再问也一样）；中止不算；别的报错原样抛出
+  const answered = (status: number) => APIError.generate(status, { type: "error", error: { type: "x", message: "no" } }, undefined, new Headers());
+  const refused = Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:1"), { code: "ECONNREFUSED" });
+  const shapes: Array<[string, unknown, boolean]> = [
+    ["连不上", new APIConnectionError({ cause: new TypeError("fetch failed", { cause: refused }) }), true],
+    ["socket hang up", Object.assign(new Error("socket hang up"), { code: "ECONNRESET" }), true],
+    ["429", answered(429), false],
+    ["529", answered(529), false],
+    ["400", answered(400), false],
+    ["中止", new APIUserAbortError(), false],
+    ["别的错", new Error("529 overloaded_error"), false],
+  ];
+  const misjudged = shapes.filter(([, err, retried]) => (transientFailure(err) !== undefined) !== retried).map(([name]) => name);
+  if (misjudged.length > 0) throw new Error(`分错了: ${misjudged.join("、")}`);
+
+  // ACP：编辑器收不回已经发出的半句，所以紧跟一条说明，再是重问的回答
+  const pipe = acpPipe();
+  const flaky = new ScriptedClient([
+    async (_req, onDelta) => {
+      await onDelta({ type: "text", text: "half " });
+      throw new TypeError("terminated");
+    },
+    async (_req, onDelta) => (await onDelta({ type: "text", text: "whole" }), said("whole")),
+  ]);
+  serveAcp(pipe.agentSide, { agent: { client: flaky, persistSessions: false, reconnect: { attempts: 3, delayMs: 5 } } });
+  const chunks: string[] = [];
+  const editor = new acp.ClientSideConnection(
+    () => ({
+      requestPermission: async () => ({ outcome: { outcome: "cancelled" } }),
+      sessionUpdate: async (n: acp.SessionNotification) => {
+        if (n.update.sessionUpdate === "agent_message_chunk" && n.update.content.type === "text") chunks.push(n.update.content.text);
+      },
+    }),
+    pipe.clientSide,
+  );
+  await editor.initialize({ protocolVersion: acp.PROTOCOL_VERSION, clientCapabilities: {} });
+  const { sessionId } = await editor.newSession({ cwd: scratch, mcpServers: [] });
+  const res = await editor.prompt({ sessionId, prompt: [{ type: "text", text: "go" }] });
+  if (res.stopReason !== "end_turn" || chunks.length !== 3 || chunks[0] !== "half " || !chunks[1]?.includes("terminated") || chunks[2] !== "whole") {
+    throw new Error(`${res.stopReason}: ${JSON.stringify(chunks)}`);
+  }
 });
 
 await checkAsync("工具执行期间进程若死掉：盘上的会话可续，并记着哪些调用在跑", async () => {

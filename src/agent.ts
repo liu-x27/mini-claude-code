@@ -10,6 +10,7 @@ import { GENERAL_PURPOSE, TaskTool } from "./tools/task.js";
 import { TodoWriteTool } from "./tools/todo.js";
 import { type HookEvent, type HookInput, type HookOutcome, type HooksConfig, runHooks } from "./hooks/index.js";
 import { AnthropicClient } from "./model/anthropic.js";
+import { transientFailure } from "./model/transient.js";
 import type { ModelClient, ModelDelta, ModelResponse } from "./model/types.js";
 import { PermissionSystem } from "./permissions/index.js";
 import { SessionManager } from "./session/manager.js";
@@ -49,6 +50,8 @@ const DEFAULT_MAX_TURNS = 20;
 const DEFAULT_MAX_TOKENS = 16_000;
 /** How far a turn cut off mid tool call may raise max_tokens, doubling each time. */
 const MAX_RETRY_TOKENS = 64_000;
+/** How often a model call whose connection broke is made again, and the first pause; see `AgentConfig.reconnect`. */
+const DEFAULT_RECONNECT = { attempts: 3, delayMs: 1000 };
 /**
  * Tools the Agent adds itself rather than taking from the registry. A host
  * that lists tools for the user to switch on and off, and passes the result
@@ -91,7 +94,7 @@ export class Agent {
    * exactOptionalPropertyTypes cannot hold an absent value.
    */
   private config: Required<
-    Omit<AgentConfig, "router" | "client" | "retryJudge" | "stopJudge" | "effort" | "compactAt" | "hooks">
+    Omit<AgentConfig, "router" | "client" | "retryJudge" | "stopJudge" | "effort" | "compactAt" | "hooks" | "reconnect">
   >;
   private registry: ToolRegistry;
   private permissions: PermissionSystem;
@@ -103,6 +106,7 @@ export class Agent {
   private effort: EffortLevel | undefined;
   private compactAt: number | false | undefined;
   private hooks: HooksConfig | undefined;
+  private reconnect: { attempts: number; delayMs: number };
   /** The session the current run is on, for hook input. */
   private sessionId = "";
   /** Set when a hook answers `continue: false`: the run ends after the call in progress. */
@@ -144,6 +148,10 @@ export class Agent {
     this.effort = config.effort;
     this.compactAt = config.compactAt;
     this.hooks = config.hooks;
+    this.reconnect = {
+      attempts: Math.max(0, config.reconnect?.attempts ?? DEFAULT_RECONNECT.attempts),
+      delayMs: Math.max(0, config.reconnect?.delayMs ?? DEFAULT_RECONNECT.delayMs),
+    };
 
     this.registry = registry ?? globalRegistry;
     this.permissions = new PermissionSystem({
@@ -446,9 +454,10 @@ export class Agent {
   // ─────────────────────────────────────────────
 
   /**
-   * One model call for this turn, asked again with more room when the reply
-   * was cut off by max_tokens in the middle of a tool call. Undefined when
-   * the caller aborted it.
+   * One model call for this turn, made again when it could not finish: with
+   * more room when the reply was cut off by max_tokens in the middle of a tool
+   * call, and after a pause when its connection broke (`transientFailure`
+   * says which failures those are). Undefined when the caller aborted it.
    */
   private async callModel(
     turn: number,
@@ -459,6 +468,7 @@ export class Agent {
   ): Promise<{ response: ModelResponse; maxTokens: number } | undefined> {
     let maxTokens = this.config.maxTokens;
     let turnUsage: AgentUsage | undefined;
+    let reconnects = 0;
 
     for (;;) {
       let response: ModelResponse;
@@ -480,7 +490,24 @@ export class Agent {
         );
       } catch (err) {
         if (signal?.aborted) return undefined;
-        throw err;
+        // The SDK retries a request that fails before its response begins, but
+        // not one whose stream breaks partway, which DeepSeek's did twice in 63
+        // Terminal-Bench trials and took the run down with it each time.
+        const broke = transientFailure(err);
+        if (broke === undefined || reconnects >= this.reconnect.attempts) throw err;
+        reconnects++;
+        // Usage arrives with a reply's last events, so a broken one has none
+        // to give: it is counted as a call of unknown usage, never as 0 tokens.
+        usageAccum.uncountedCalls = (usageAccum.uncountedCalls ?? 0) + 1;
+        turnUsage = sumUsage(turnUsage ?? zeroUsage(), { ...zeroUsage(), uncountedCalls: 1 });
+        const delayMs = this.reconnect.delayMs * 2 ** (reconnects - 1);
+        // The event first: a terminal's renderer ends the half-printed line on it.
+        await this.emit({ type: "turn_retry", turn, reason: broke, maxTokens, usageUnknown: true });
+        logger.warn(
+          `Turn ${turn}: ${broke}; making the call again in ${delayMs} ms (${reconnects} of ${this.reconnect.attempts}). Its usage never arrived, so its tokens are not counted.`,
+        );
+        if (!(await pause(delayMs, signal))) return undefined;
+        continue;
       }
 
       const usage = this.accumulateUsage(response, usageAccum);
@@ -881,6 +908,7 @@ export class Agent {
         cwd: this.config.cwd,
         maxTurns: this.config.maxTurns,
         maxTokens: this.config.maxTokens,
+        reconnect: this.reconnect,
         thinking: this.config.thinking,
         ...(this.effort ? { effort: this.effort } : {}),
         ...(this.compactAt !== undefined ? { compactAt: this.compactAt } : {}),
@@ -1118,13 +1146,38 @@ async function saveFullOutput(sessionId: string, toolUseId: string, text: string
 }
 
 function sumUsage(a: AgentUsage, b: AgentUsage): AgentUsage {
+  const uncounted = (a.uncountedCalls ?? 0) + (b.uncountedCalls ?? 0);
   return {
     inputTokens: a.inputTokens + b.inputTokens,
     outputTokens: a.outputTokens + b.outputTokens,
     cacheCreationTokens: a.cacheCreationTokens + b.cacheCreationTokens,
     cacheReadTokens: a.cacheReadTokens + b.cacheReadTokens,
     estimatedCostUsd: addCost(a.estimatedCostUsd, b.estimatedCostUsd),
+    ...(uncounted > 0 ? { uncountedCalls: uncounted } : {}),
   };
+}
+
+function zeroUsage(): AgentUsage {
+  return { inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0, estimatedCostUsd: 0 };
+}
+
+/** Wait `ms`, unless the signal aborts first: false if it did. */
+function pause(ms: number, signal: AbortSignal | undefined): Promise<boolean> {
+  return new Promise((resolve) => {
+    if (signal?.aborted) {
+      resolve(false);
+      return;
+    }
+    const onAbort = () => {
+      clearTimeout(timer);
+      resolve(false);
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve(true);
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 /**
