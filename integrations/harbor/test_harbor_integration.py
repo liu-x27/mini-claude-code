@@ -199,6 +199,12 @@ class ScriptsTest(unittest.TestCase):
         self.assertEqual(summarize.peak_factor("2026-10-18T02:00:00Z", "deepseek"), 1.0)  # a Sunday
         self.assertEqual(summarize.peak_factor("2026-10-19T02:00:00Z", "none"), 1.0)
 
+    def test_a_log_with_its_own_code_fence_stays_inside_its_block(self):
+        # mini-swe-agent's commands are fenced; run 39234894240's page lost 13 trials' details to one.
+        self.assertEqual(summarize._fence("no backticks"), "```")
+        self.assertEqual(summarize._fence("```mswea_bash_command\nls\n```"), "````")
+        self.assertEqual(summarize._fence("a ````` run"), "``````")
+
     def test_summary_scores_by_task_and_names_what_is_missing(self):
         def trial(job, agent, task, reward, exception=None, tokens=(1000, 800, 50)):
             return {

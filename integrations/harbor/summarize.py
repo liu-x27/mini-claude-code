@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import json
 import random
+import re
 import statistics
 import sys
 from collections import Counter, defaultdict
@@ -137,6 +138,13 @@ def _tail(path: Path, lines: int = 15, chars: int = 1500) -> str | None:
     except OSError:
         return None
     return "\n".join(text.rstrip().splitlines()[-lines:])[-chars:] or None
+
+
+def _fence(text: str) -> str:
+    """A code fence longer than any run of backticks in the text. mini-swe-agent fences its commands, and
+    a log tail holding one would otherwise close the block early and print every later trial's as text."""
+    longest = max((len(run) for run in re.findall(r"`+", text)), default=0)
+    return "`" * max(3, longest + 1)
 
 
 def _seconds(timing: Any) -> float | None:
@@ -290,7 +298,8 @@ def summarize(trials: list[dict[str, Any]], prices, currency: str, peak: str | N
                 )
                 if part
             )
-            out.append(f"<details><summary>{row['job']}: {row['category']}</summary>\n\n```\n{body or '(no test output)'}\n```\n</details>")
+            fence = _fence(body)
+            out.append(f"<details><summary>{row['job']}: {row['category']}</summary>\n\n{fence}\n{body or '(no test output)'}\n{fence}\n</details>")
 
     for row in trials:
         row["est_cost"] = cost(row, prices, peak)
