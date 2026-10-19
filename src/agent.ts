@@ -48,7 +48,7 @@ registerBuiltinTools();
 const DEFAULT_MODEL = "claude-opus-5-5";
 const DEFAULT_MAX_TURNS = 20;
 const DEFAULT_MAX_TOKENS = 16_000;
-/** How far a turn cut off mid tool call may raise max_tokens, doubling each time. */
+/** How far a turn that max_tokens cut off may raise it, doubling each time. */
 const MAX_RETRY_TOKENS = 64_000;
 /** How often a model call whose connection broke is made again, and the first pause; see `AgentConfig.reconnect`. */
 const DEFAULT_RECONNECT = { attempts: 3, delayMs: 1000 };
@@ -373,6 +373,17 @@ export class Agent {
           break;
         }
 
+        if (response.stopReason === "max_tokens" && !text) {
+          // Still cut off with all the room a turn may have, before any text:
+          // there is nothing to keep, and a turn of cut-off thinking alone is
+          // not one to send back on the next request.
+          finalStopReason = response.stopReason;
+          finalText = [notice, "It had not written any text or tool call yet, so nothing was saved."]
+            .filter(Boolean)
+            .join("\n\n");
+          break;
+        }
+
         // end_turn, or any other stop reason
         messages.push({ role: "assistant", content: response.content });
 
@@ -455,9 +466,9 @@ export class Agent {
 
   /**
    * One model call for this turn, made again when it could not finish: with
-   * more room when the reply was cut off by max_tokens in the middle of a tool
-   * call, and after a pause when its connection broke (`transientFailure`
-   * says which failures those are). Undefined when the caller aborted it.
+   * more room when max_tokens cut the reply off, up to MAX_RETRY_TOKENS, and
+   * after a pause when its connection broke (`transientFailure` says which
+   * failures those are). Undefined when the caller aborted it.
    */
   private async callModel(
     turn: number,
@@ -513,16 +524,18 @@ export class Agent {
       const usage = this.accumulateUsage(response, usageAccum);
       turnUsage = turnUsage ? sumUsage(turnUsage, usage) : usage;
 
-      const cutMidCall = response.stopReason === "max_tokens" && response.content.some((b) => b.type === "tool_use");
-      if (cutMidCall && maxTokens < MAX_RETRY_TOKENS && !signal?.aborted) {
+      // Asked again with more room, whatever the cut fell in, rather than told
+      // to continue. Thinking can spend the whole budget before any text or
+      // tool call (DeepSeek's did, twice in 63 Terminal-Bench trials, and each
+      // run ended there), and a continuation would get no more room for it. A
+      // reply asked again also comes back whole, so the history never holds a
+      // cut one. The cost: the cut reply's output, and a long answer streamed
+      // twice, with turn_retry between.
+      if (response.stopReason === "max_tokens" && maxTokens < MAX_RETRY_TOKENS && !signal?.aborted) {
         const next = Math.min(maxTokens * 2, MAX_RETRY_TOKENS);
-        logger.warn(`Turn ${turn} was cut off at max_tokens=${maxTokens} mid tool call; asking again with ${next}`);
-        await this.emit({
-          type: "turn_retry",
-          turn,
-          reason: `cut off at max_tokens=${maxTokens} in the middle of a tool call`,
-          maxTokens: next,
-        });
+        const reason = `cut off at max_tokens=${maxTokens} ${cutPoint(response.content)}`;
+        await this.emit({ type: "turn_retry", turn, reason, maxTokens: next });
+        logger.warn(`Turn ${turn} was ${reason}; asking again with ${next}`);
         maxTokens = next;
         continue;
       }
@@ -1085,6 +1098,13 @@ async function settle<T>(judge: () => Promise<T>, fallback: (reason: string) => 
 function userTurn(prompt: string, notes: string[]): ConversationMessage["content"] {
   if (notes.length === 0) return prompt;
   return [...notes.map((text) => ({ type: "text" as const, text })), { type: "text" as const, text: prompt }];
+}
+
+/** Where max_tokens cut a reply off, for the reason a retry gives. */
+function cutPoint(content: Anthropic.ContentBlockParam[]): string {
+  if (content.some((b) => b.type === "tool_use")) return "in the middle of a tool call";
+  if (content.some((b) => b.type === "text" && b.text)) return "partway through its text";
+  return "before any text or tool call";
 }
 
 /** What to tell the caller when the model stopped for a reason other than finishing. */

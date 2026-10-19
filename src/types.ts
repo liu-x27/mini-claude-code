@@ -437,10 +437,10 @@ export type AgentEvent =
     }
   | { type: "tool_retry"; toolUseId: string; toolName: string; error: string; verdict: RetryVerdict }
   /**
-   * The turn's model call is made again, and whatever it streamed so far is void: its reply was
-   * cut off by max_tokens in the middle of a tool call (asked again with more room, `maxTokens`),
-   * or its connection broke (asked again after a pause). For a broken connection the usage never
-   * arrived, so `usageUnknown` is true and that attempt's tokens are counted nowhere.
+   * The turn's model call is made again, and whatever it streamed so far is void: max_tokens cut
+   * its reply off, in its thinking, its text or a tool call (asked again with more room,
+   * `maxTokens`), or its connection broke (asked again after a pause). For a broken connection the
+   * usage never arrived, so `usageUnknown` is true and that attempt's tokens are counted nowhere.
    */
   | { type: "turn_retry"; turn: number; reason: string; maxTokens: number; usageUnknown?: true }
   /** The history was replaced by a summary; `transcript` is where the full one was archived. */

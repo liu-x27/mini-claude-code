@@ -229,9 +229,13 @@ the user is asked one thing at a time. Each call's input is checked against its 
 schema before anything else, and each result the model sees is capped at 40,000
 characters (`AGENT_MAX_TOOL_OUTPUT`), start and end kept; the whole text is saved to a
 file the cut names, so the middle is one Read away (Read itself says to use `offset`). A reply that max_tokens cuts off
-in the middle of a tool call is asked again with twice the room, up to 64,000; one that
-stays cut off, or ends in a refusal, is neither run nor saved, since a `tool_use` without
-its result makes every later request fail. A call whose connection breaks — partway
+— in its thinking, its text or a tool call — is asked again with twice the room, up to
+64,000. It is asked again rather than told to continue, because thinking can use the whole
+budget before any text and only a bigger budget gives it more room; the answer also comes
+back whole. The price is a long answer streamed twice. A reply still cut off at 64,000 is saved
+if it has text and dropped if it has none; one in the middle of a tool call, or one that
+ends in a refusal, is neither run nor saved, since a `tool_use` without its result makes
+every later request fail. A call whose connection breaks — partway
 through its reply, which the SDK does not retry, or before the reply, once the SDK's own
 retries are spent — is made again up to three times, after 1, 2 and 4 seconds
 (`reconnect`); one refused with an HTTP status, or aborted, is not. A broken reply's usage
@@ -906,9 +910,10 @@ Four of this harness's 15 misses were the harness's own failures, not the task's
   one that fails partway through, and the loop above it did not retry either. These are
   the table's two errors. The loop now makes such a call again (How it works, above).
 - **A reply cut off at max_tokens outside a tool call.** This harness asks for 16,000 output
-  tokens, and raises that only for a reply cut off in the middle of a tool call. A reply
-  that runs out first ends the run, and long thinking can do that. It happened on
-  adaptive-rejection-sampler and path-tracing-reverse.
+  tokens, and raised that only for a reply cut off in the middle of a tool call. A reply
+  that ran out first ended the run, and long thinking can do that. It happened on
+  adaptive-rejection-sampler and path-tracing-reverse. Any reply max_tokens cuts off is
+  now asked again with more room (How it works, above).
 
 Claude Code passed two of those four tasks. Of the other eleven misses, three ran out of
 time and eight finished with the tests failing. Among the eight are primers outside the
@@ -966,7 +971,8 @@ What the runs did and did not control for:
   Claude Code's default. terminus-2 and mini-swe-agent get the model's window and output
   limit registered in LiteLLM, without which LiteLLM asks for 4,096 output tokens.
 - **This harness's own settings.** It keeps its own 16,000 output tokens (more when a reply
-  is cut off mid tool call) and is told the 1M window. It sends
+  is cut off: in these runs only mid tool call, now for any reply) and is told the 1M
+  window. It sends
   `thinking: {"type": "adaptive"}`, its default, which DeepSeek accepts and does not
   document; terminus-2 and mini-swe-agent send none, which leaves DeepSeek's default,
   thinking on.
@@ -998,7 +1004,7 @@ Not run yet:
   and mini-swe-agent would take;
 - the 16 tasks with longer limits;
 - other models (MiniMax-M2.7 is wired in as a second provider);
-- this harness again, after the two failures above are fixed.
+- this harness again, now that the two failures above are fixed.
 
 ### Any Anthropic-compatible endpoint
 
@@ -1038,7 +1044,10 @@ The same section covers what was built after that, each against a scripted model
 stand-in server: compaction (including a failed summary and an endpoint that ignores
 `tool_choice: "none"`), project instructions, permission rules, MCP over stdio, skills,
 subagents, TodoWrite, `-p` with its output formats and exit codes, ACP in-process and over
-stdio against the real CLI, and each hook event.
+stdio against the real CLI, and each hook event. Two more checks are the harness's own
+failures on Terminal-Bench (2026-10-19), each reproduced before its fix: a stream that a
+stand-in server cuts after two deltas, and a reply whose thinking uses the whole of
+max_tokens.
 
 Reproducing the tables takes two commands, and the bare ones are not the offline ones —
 both runners default to `--backend llm`:

@@ -1444,6 +1444,76 @@ await checkAsync("一直被截断：到上限为止，什么都不执行，会�
   if (!saved || danglingToolUse(saved.messages)) throw new Error("会话里留下了没有结果的 tool_use，之后每次续跑都会 400");
 });
 
+await checkAsync("max_tokens 截在思考里（没写字、没调工具）：调大重问，不当作回答结束 run；截在正文里也重问；到上限仍截断：只有思考不入库并说明，有正文照常保存；ACP 仍报 max_tokens", async () => {
+  // Terminal-Bench 上 DeepSeek 默认开思考，16k 全花在思考上，修之前整个 run 就此结束（adaptive-rejection-sampler、path-tracing-reverse）
+  const thinkingOnly = (): ModelResponse => ({
+    content: [{ type: "thinking", thinking: "Let me weigh every option at length", signature: "sig" }],
+    stopReason: "max_tokens",
+    usage: noUsage,
+  });
+  const dir = path.join(scratch, "maxtok-thinking");
+  const asked: number[] = [];
+  const client = new ScriptedClient([
+    async (req) => (asked.push(req.maxTokens), thinkingOnly()),
+    async (req) => (asked.push(req.maxTokens), calls(["t1", "Echo", { text: "x" }])),
+    said("done"),
+  ]);
+  const { agent, events } = scriptedAgent(client, { persistSessions: true, sessionDir: dir, maxTokens: 16_000 });
+  const result = await agent.run("go");
+  if (asked.join(",") !== "16000,32000") throw new Error(`max_tokens 依次是 ${asked.join(",")}，结局 ${result.stopReason}`);
+  if (result.stopReason !== "end_turn" || result.text !== "done") throw new Error(`结果: ${result.stopReason} / ${result.text}`);
+  const retry = events.find((e): e is Extract<AgentEvent, { type: "turn_retry" }> => e.type === "turn_retry");
+  if (!retry?.reason.includes("before any text or tool call") || retry.maxTokens !== 32_000) throw new Error(`turn_retry: ${JSON.stringify(retry)}`);
+  const saved = await new SessionManager(dir).load(result.sessionId);
+  if (JSON.stringify(saved?.messages).includes("weigh every option")) throw new Error("截断的思考进了会话");
+
+  // 一直截在思考里：问到 64k 为止；什么都没写，就不入库，结局说明
+  const stuckDir = path.join(scratch, "maxtok-thinking-stuck");
+  const stuck = new ScriptedClient([thinkingOnly(), thinkingOnly(), thinkingOnly()]);
+  const r2 = await scriptedAgent(stuck, { persistSessions: true, sessionDir: stuckDir, maxTokens: 16_000 }).agent.run("go");
+  if (r2.stopReason !== "max_tokens" || stuck.seen.length !== 3) throw new Error(`结局 ${r2.stopReason}，问了 ${stuck.seen.length} 次`);
+  if (!r2.text.includes("64,000") || !r2.text.includes("nothing was saved")) throw new Error(`说明: ${r2.text}`);
+  const saved2 = await new SessionManager(stuckDir).load(r2.sessionId);
+  if (JSON.stringify(saved2?.messages).includes("weigh every option") || saved2?.messages.at(-1)?.role !== "user") {
+    throw new Error(`只有思考的回复进了会话: ${JSON.stringify(saved2?.messages)}`);
+  }
+
+  // 截在正文里：也是重问（不续写），回答才完整；到 64k 还截断，正文照常保存、照常结束
+  const cutText = (text: string): ModelResponse => ({
+    content: [{ type: "thinking", thinking: "plan", signature: "sig" }, { type: "text", text }],
+    stopReason: "max_tokens",
+    usage: noUsage,
+  });
+  const textAsked: number[] = [];
+  const r3 = await scriptedAgent(
+    new ScriptedClient([async (req) => (textAsked.push(req.maxTokens), cutText("Step one, then")), async (req) => (textAsked.push(req.maxTokens), said("Step one, then step two."))]),
+    { maxTokens: 16_000 },
+  ).agent.run("go");
+  if (textAsked.join(",") !== "16000,32000" || r3.text !== "Step one, then step two.") throw new Error(`正文截断: ${textAsked.join(",")} / ${r3.text}`);
+  const longDir = path.join(scratch, "maxtok-text-stuck");
+  const r4 = await scriptedAgent(new ScriptedClient([cutText("a"), cutText("ab"), cutText("abc")]), {
+    persistSessions: true,
+    sessionDir: longDir,
+    maxTokens: 16_000,
+  }).agent.run("go");
+  const saved4 = await new SessionManager(longDir).load(r4.sessionId);
+  if (r4.stopReason !== "max_tokens" || r4.text !== "abc" || !JSON.stringify(saved4?.messages.at(-1)).includes('"abc"')) {
+    throw new Error(`到上限的正文: ${r4.stopReason} / ${r4.text} / ${JSON.stringify(saved4?.messages.at(-1))}`);
+  }
+
+  // ACP 把 max_tokens 原样交给编辑器：重问不改变这一点
+  const pipe = acpPipe();
+  serveAcp(pipe.agentSide, { agent: { client: new ScriptedClient([thinkingOnly(), thinkingOnly(), thinkingOnly()]), persistSessions: false, maxTokens: 16_000 } });
+  const editor = new acp.ClientSideConnection(
+    () => ({ requestPermission: async () => ({ outcome: { outcome: "cancelled" } }), sessionUpdate: async () => undefined }),
+    pipe.clientSide,
+  );
+  await editor.initialize({ protocolVersion: acp.PROTOCOL_VERSION, clientCapabilities: {} });
+  const { sessionId } = await editor.newSession({ cwd: scratch, mcpServers: [] });
+  const res = await editor.prompt({ sessionId, prompt: [{ type: "text", text: "think" }] });
+  if (res.stopReason !== "max_tokens") throw new Error(`ACP stopReason: ${res.stopReason}`);
+});
+
 await checkAsync("refusal 打断了工具调用：不执行、不入库，并说明原因", async () => {
   const client = new ScriptedClient([
     { ...cutOff("r1", [{ type: "text", text: "Let me" }]), stopReason: "refusal" },
