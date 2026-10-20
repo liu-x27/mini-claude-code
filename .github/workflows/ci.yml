@@ -28,3 +28,23 @@ jobs:
       - run: npm test
       # The gate's dev set on the offline allow-list: no model needed, and any false allow fails the run.
       - run: npm run eval:risk-gate -- --backend allowlist
+
+  sandbox:
+    # The escape tests on a real sandbox: sandbox-runtime on bubblewrap. Every blocked case has a
+    # control showing the same write or connection works outside, so a sandbox that never came up
+    # fails here rather than passing.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24.12.0
+          cache: npm
+      - run: git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
+      # What srt needs on Linux, as its own CI installs it.
+      - run: sudo apt-get update && sudo apt-get install -y bubblewrap socat ripgrep
+      # Ubuntu 24.04 confines unprivileged user namespaces with AppArmor, which stops bubblewrap;
+      # srt's README and CI lift that. The runner is thrown away after the job.
+      - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - run: npm ci
+      - run: npm run test:sandbox -- --backend srt
