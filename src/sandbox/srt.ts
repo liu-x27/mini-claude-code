@@ -52,6 +52,9 @@ interface SrtModule {
 
 const INSTALL = `npm install ${SRT_PACKAGE}@${SRT_VERSION}`;
 
+/** Under the home directory: what srt makes writable without being asked (its HOME_CONVENIENCE_WRITE_DIRS). */
+export const SRT_CONVENIENCE_WRITES = [".npm/_logs", ".claude/debug"];
+
 function platformFix(): string {
   switch (process.platform) {
     case "linux":
@@ -123,6 +126,9 @@ export class SrtBackend implements SandboxBackend {
     const srt = this.srt;
     if (!srt) throw new Error("srt was never probed");
     await this.configure(request.policy);
+    // srt points TMPDIR here and always lets it be written, but leaves making it to whoever
+    // embeds srt; a folder that is not there on the host is not mounted, and writes to it fail.
+    if (process.platform !== "win32") fs.mkdirSync(srtTempDir(), { recursive: true });
     const { argv, env } = await srt.SandboxManager.wrapWithSandboxArgv(request.command, binShell(request.shell), undefined, undefined, request.cwd);
     const [file, ...args] = argv;
     if (!file) throw new Error("srt returned no command to run");
@@ -170,6 +176,9 @@ export class SrtBackend implements SandboxBackend {
     // srt's own files, when a sandboxed command could otherwise write them:
     // on Windows srt-win.exe is started anew for every command, as the user.
     const own = this.home && policy.allowWrite.some((dir) => inside(this.home as string, dir)) ? [this.home] : [];
+    // Two log folders srt opens to writing on Linux and macOS as a convenience, outside the
+    // workspace; closed, so that the policy is what it says.
+    const convenience = windows ? [] : SRT_CONVENIENCE_WRITES.map((p) => path.join(home, p));
     return {
       network: {
         // allowedDomains must be present, even empty, or srt leaves the network open.
@@ -184,11 +193,16 @@ export class SrtBackend implements SandboxBackend {
         // be another ACL entry on the user's own folders.
         denyRead: windows ? policy.denyRead.filter((p) => !inside(p, home)) : policy.denyRead,
         allowWrite: policy.allowWrite,
-        denyWrite: [...policy.denyWrite, ...own],
+        denyWrite: [...policy.denyWrite, ...own, ...convenience],
       },
       ...(windows && this.srt ? { windows: { srtWin: { path: this.srt.VENDORED_SRT_WIN_EXE } } } : {}),
     };
   }
+}
+
+/** The TMPDIR srt gives a sandboxed command on Linux and macOS, chosen as srt chooses it. */
+function srtTempDir(): string {
+  return process.env.CLAUDE_CODE_TMPDIR || process.env.CLAUDE_TMPDIR || "/tmp/claude";
 }
 
 /** Git Bash as an absolute path, which srt runs with -c; cmd.exe, srt's own default, as nothing. */

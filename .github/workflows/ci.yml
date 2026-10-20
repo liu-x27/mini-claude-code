@@ -69,4 +69,5 @@ jobs:
       # The workspace under the profile's temp directory, then on the D: drive, where any signed-in
       # user may modify new folders and srt confined writes only from 0.0.81 on.
       - run: npm run test:sandbox -- --backend srt
-      - run: npm run test:sandbox -- --backend srt --root "$env:RUNNER_TEMP"
+      - if: ${{ !cancelled() }}
+        run: npm run test:sandbox -- --backend srt --root "$env:RUNNER_TEMP"

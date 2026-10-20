@@ -26,7 +26,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import chalk from "chalk";
 import { isSandboxBackendName, SANDBOX_BACKENDS, sandboxBackend } from "../src/sandbox/backends.js";
-import { Sandbox } from "../src/sandbox/index.js";
+import { inside as within, Sandbox } from "../src/sandbox/index.js";
 import { MxcBackend } from "../src/sandbox/mxc.js";
 import { SRT_PACKAGE, SrtBackend } from "../src/sandbox/srt.js";
 import { BashTool } from "../src/tools/bash.js";
@@ -100,18 +100,35 @@ interface Outcome {
   case: string;
   expect: string;
   ok: boolean;
+  /** Set when the case failed the way an open upstream issue says it does, under that issue's conditions. */
+  known?: string;
   detail: string;
 }
 const outcomes: Outcome[] = [];
 const cleanups: Array<() => Promise<unknown>> = [];
 
-async function test(label: string, expect: string, fn: () => Promise<string>): Promise<void> {
+/**
+ * One case. `known` names an open upstream issue that makes it fail where
+ * `when` holds: such a failure is reported as known and not counted, and
+ * only if its message matches `matches`, so a different failure still counts.
+ */
+async function test(
+  label: string,
+  expect: string,
+  fn: () => Promise<string>,
+  known?: { when: boolean; issue: string; matches: RegExp },
+): Promise<void> {
   try {
     const detail = await fn();
-    outcomes.push({ case: label, expect, ok: true, detail });
+    outcomes.push({ case: label, expect, ok: true, detail: known?.when ? `${detail} (${known.issue} did not show)` : detail });
     console.log(`${chalk.green("  ✓")} ${label} ${chalk.gray(`— ${detail}`)}`);
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
+    if (known?.when && known.matches.test(detail)) {
+      outcomes.push({ case: label, expect, ok: true, known: known.issue, detail });
+      console.log(`${chalk.yellow("  ⚠")} ${label} ${chalk.yellow(`— known, ${known.issue}: ${detail}`)}`);
+      return;
+    }
     outcomes.push({ case: label, expect, ok: false, detail });
     console.log(`${chalk.red("  ✗")} ${label} ${chalk.red(`— ${detail}`)}`);
     annotate(label, detail);
@@ -174,12 +191,24 @@ try {
     return "readme.txt read";
   });
 
-  await test("a Node script in the workspace runs", "allowed", async () => {
-    await fs.writeFile(path.join(workspace, "hello.mjs"), `console.log("node-${id}", process.version);\n`);
-    const r = await inside("node hello.mjs");
-    if (r.type !== "success" || !r.output.includes(`node-${id}`)) throw new Error(gist(r));
-    return r.output.trim().split(/\s+/).slice(-1)[0] ?? "ran";
-  });
+  // Node's realpath stats every folder down to the script; srt's account on Windows cannot stat
+  // those between the profile and a workspace two or more levels inside it.
+  const srtProfileStat = {
+    when: name === "srt" && process.platform === "win32" && within(workspace, home) && workspace !== home,
+    issue: "sandbox-runtime#657",
+    matches: /EPERM: operation not permitted, lstat/,
+  };
+  await test(
+    "a Node script in the workspace runs",
+    "allowed",
+    async () => {
+      await fs.writeFile(path.join(workspace, "hello.mjs"), `console.log("node-${id}", process.version);\n`);
+      const r = await inside("node hello.mjs");
+      if (r.type !== "success" || !r.output.includes(`node-${id}`)) throw new Error(gist(r));
+      return r.output.trim().split(/\s+/).slice(-1)[0] ?? "ran";
+    },
+    srtProfileStat,
+  );
 
   await test("it writes in the temp directory the sandbox gives it", "allowed", async () => {
     const r = await inside(say.tmp(`t-${id}`));
@@ -192,6 +221,15 @@ try {
   await test("a write to the home directory", "blocked", () => blockedWrite(path.join(home, `sbx-escape-${id}.txt`)));
   await test("a write to the shared temp directory", "blocked", () => blockedWrite(path.join(os.tmpdir(), `sbx-escape-${id}.txt`)));
   await test("a write next to the workspace", "blocked", () => blockedWrite(path.join(root, `next-to-workspace-${id}.txt`)));
+  // srt opens this to writing by default on Linux and macOS; the srt backend closes it again.
+  await test("a write to ~/.npm/_logs", "blocked", async () => {
+    const logs = path.join(home, ".npm", "_logs");
+    if (!(await exists(logs))) {
+      await fs.mkdir(logs, { recursive: true });
+      cleanups.push(() => fs.rmdir(logs).catch(() => undefined));
+    }
+    return blockedWrite(path.join(logs, `sbx-escape-${id}.txt`));
+  });
 
   await test("a write through a link in the workspace that points outside", "blocked", async () => {
     const target = path.join(home, `sbx-link-target-${id}`);
@@ -336,17 +374,21 @@ try {
 }
 
 const failed = outcomes.filter((o) => !o.ok);
+const known = outcomes.filter((o) => o.known);
+const passed = outcomes.length - failed.length - known.length;
+const knownNote = known.length > 0 ? `, ${known.length} known (${known.map((o) => o.known).join(", ")})` : "";
 console.log(`\n${"─".repeat(50)}`);
 console.log(
   failed.length === 0
-    ? chalk.green.bold(`✅ ${outcomes.length}/${outcomes.length} on ${name} (${process.platform})`)
-    : chalk.yellow(`⚠  ${outcomes.length - failed.length}/${outcomes.length} on ${name} (${process.platform}), ${chalk.red(`${failed.length} failed`)}`),
+    ? chalk.green.bold(`✅ ${passed}/${outcomes.length} on ${name} (${process.platform})${knownNote}`)
+    : chalk.yellow(`⚠  ${passed}/${outcomes.length} on ${name} (${process.platform})${knownNote}, ${chalk.red(`${failed.length} failed`)}`),
 );
 console.log("─".repeat(50));
 
 // On Actions, the same table on the run's summary page.
 if (process.env.GITHUB_STEP_SUMMARY) {
-  const rows = outcomes.map((o) => `| ${o.ok ? "✅" : "❌"} | ${o.case} | ${o.expect} | ${o.detail.replace(/\|/g, "\\|")} |`);
+  const mark = (o: Outcome) => (o.known ? `⚠️ known, ${o.known}` : o.ok ? "✅" : "❌");
+  const rows = outcomes.map((o) => `| ${mark(o)} | ${o.case} | ${o.expect} | ${o.detail.replace(/\|/g, "\\|")} |`);
   const head = `### Sandbox escape tests: ${name} on ${process.platform} (${status.detail})\n\n| | case | expected | what happened |\n|---|---|---|---|`;
   await fs.appendFile(process.env.GITHUB_STEP_SUMMARY, `${head}\n${rows.join("\n")}\n\n`);
 }
