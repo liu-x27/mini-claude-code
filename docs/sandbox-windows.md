@@ -55,6 +55,7 @@ to srt's README, release notes and the source of its `srt-win.exe`, it:
 It installs no service and no scheduled task. It needs the built-in Secondary Logon service
 (`seclogon`). Your own network, and every other account's, are not filtered. srt does not
 document which Windows editions it supports; its CI runs on GitHub's Windows Server runners.
+The `srt-win.exe` that does all this, from the npm package, is not code-signed.
 
 ### While the harness runs
 
@@ -141,13 +142,22 @@ this harness does not use.
 - **No Git Bash.** Nothing built on msys-2.0.dll can start in a container
   ([mxc#1061](https://github.com/microsoft/mxc/issues/1061)), so under `--sandbox mxc` the Bash
   tool's commands run in cmd.exe, and the model is told so.
-- **Reads are closed too.** A command reads only the working directory, a temp folder of its
-  own, and folders open to every AppContainer (Windows, Program Files).
+- **Reads are closed too.** A command reads only the working directory, the folders on PATH
+  (granted read-only, except any that would expose your home directory or a credential store),
+  and folders open to every AppContainer (Windows, much of Program Files). Its TEMP is a folder
+  Windows makes for the container, and HOME, USERPROFILE and APPDATA point into a folder of its
+  own that the harness removes on exit, so git and npm do not stop at your unreadable
+  `.gitconfig` and `.npmrc`.
+- **Node needs two flags.** Node's JavaScript `realpath` stats every folder from the drive root
+  down, which the container cannot, so scripts, npm and npx fail before they start. The harness
+  adds `--preserve-symlinks --preserve-symlinks-main` to `NODE_OPTIONS` inside the container,
+  which changes how Node resolves symlinked packages. Code that calls `fs.realpathSync` itself
+  still fails there.
 - **The network is closed, not filtered by host.** MXC's rules match IP addresses, so
   `--sandbox-allow-domain` needs srt.
-- Node's `fs.realpathSync.native` fails with EPERM in the `base-container` tier, which breaks
-  npm and other tools, and git cannot read its working tree unless `C:\` is readable
-  ([mxc#1464](https://github.com/microsoft/mxc/issues/1464)).
+- MXC's tracker has further reports of Node and git failing in the `base-container` tier
+  ([mxc#1464](https://github.com/microsoft/mxc/issues/1464)); on the machine tested here
+  (below), `git init` and `git status` in the working directory worked.
 - The harness has to run in your desktop session: from a service or over SSH (session 0) the
   container's programs fail to start ([mxc#1465](https://github.com/microsoft/mxc/issues/1465)).
 
@@ -156,3 +166,7 @@ this harness does not use.
 ```powershell
 npm run test:sandbox -- --backend mxc
 ```
+
+On 2026-10-19, on Windows 11 Home China 25H2, build 26200.9711, MXC 1.0.1 chose the
+`base-container` tier and all 17 cases passed. Inside, Node scripts, `npm`, `npx`, `git init` and
+`git status` ran; listing `C:\` and calling `fs.realpathSync` from a script did not.

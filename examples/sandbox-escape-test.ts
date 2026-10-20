@@ -163,6 +163,13 @@ try {
     return "readme.txt read";
   });
 
+  await test("a Node script in the workspace runs", "allowed", async () => {
+    await fs.writeFile(path.join(workspace, "hello.mjs"), `console.log("node-${id}", process.version);\n`);
+    const r = await inside("node hello.mjs");
+    if (r.type !== "success" || !r.output.includes(`node-${id}`)) throw new Error(gist(r));
+    return r.output.trim().split(/\s+/).slice(-1)[0] ?? "ran";
+  });
+
   await test("it writes in the temp directory the sandbox gives it", "allowed", async () => {
     const r = await inside(say.tmp(`t-${id}`));
     if (r.type !== "success" || !r.output.includes(`t-${id}`)) throw new Error(gist(r));
@@ -213,6 +220,20 @@ try {
 
   // example.com's page says "Example Domain"; a proxy's refusal of an HTTPS tunnel leaves the code at 000.
   const answered = (r: ToolResult) => text(r).includes("Example Domain") || /http [23]\d\d/.test(text(r));
+  // curl's own words, an error or the code -w printed: a curl that never started says neither,
+  // and its failure would say nothing about the network.
+  const curlRan = (r: ToolResult) => /curl: \(\d+\)|(?:http|tcp) \d{3}/.test(text(r));
+  const refused = (r: ToolResult) => {
+    if (answered(r)) throw new Error(`it went through: ${gist(r)}`);
+    if (!curlRan(r)) throw new Error(`inconclusive: curl did not run inside: ${gist(r)}`);
+    return `refused (${gist(r)})`;
+  };
+
+  await test("curl starts inside the sandbox", "allowed", async () => {
+    const r = await inside("curl --version");
+    if (r.type !== "success" || !/^curl \d/m.test(r.output)) throw new Error(gist(r));
+    return r.output.split("\n")[1]?.slice(0, 60) ?? "ran";
+  });
 
   // Plain HTTP as well as HTTPS: TLS can fail inside for reasons of its own (on Windows, Git
   // Bash's curl is built on schannel, which srt's restricted token stops), and a request that
@@ -221,9 +242,7 @@ try {
     await test(`a request to ${url}`, "blocked", async () => {
       const control = await fetch(url, { signal: AbortSignal.timeout(15_000) }).catch((err: unknown) => err as Error);
       if (control instanceof Error) throw new Error(`inconclusive: no network outside the sandbox either (${control.message})`);
-      const r = await inside(`curl -sS -m 15 -w "\\nhttp %{http_code}" ${url}`);
-      if (answered(r)) throw new Error(`the request went through: ${gist(r)}`);
-      return `refused (${gist(r)})`;
+      return refused(await inside(`curl -sS -m 15 -w "\\nhttp %{http_code}" ${url}`));
     });
   }
 
@@ -233,7 +252,7 @@ try {
     });
     const r = await inside(`curl -sS -m 10 --noproxy "*" -o ${say.devnull} -w "tcp %{http_code}" http://1.1.1.1/`);
     if (/tcp [1-5]\d\d/.test(text(r))) throw new Error(`the connection was made: ${gist(r)}`);
-    return `refused (${gist(r)})`;
+    return refused(r);
   });
 
   // The control for the two cases above, where the backend can filter by host: curl inside the
@@ -248,8 +267,7 @@ try {
       const allowed = await inside('curl -sS -m 20 -w "\\nhttp %{http_code}" http://example.com/');
       if (!answered(allowed)) throw new Error(`example.com, which the policy names, did not answer: ${gist(allowed)}`);
       const other = await inside('curl -sS -m 20 -w "\\nhttp %{http_code}" http://example.org/');
-      if (answered(other)) throw new Error(`example.org, which it does not name, answered: ${gist(other)}`);
-      return `example.com answered; example.org refused (${gist(other)})`;
+      return `example.com answered; example.org ${refused(other)}`;
     });
   }
 

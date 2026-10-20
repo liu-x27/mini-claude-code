@@ -40,7 +40,8 @@ const FIX_TIER =
 export class MxcBackend implements SandboxBackend {
   readonly name = "mxc";
   readonly shell: Shell = cmd();
-  readonly note = "Reading is closed too, except in the working directory, the temp directory and the Windows and Program Files folders.";
+  readonly note =
+    "Reading is closed too, except in the working directory, the temp directory, the folders on PATH and the Windows and Program Files folders; HOME is a folder of its own.";
   private exe: string | undefined;
   private denyPaths = false;
   private tmp: string | undefined;
@@ -72,7 +73,7 @@ export class MxcBackend implements SandboxBackend {
 
     // A command through it, end to end, with nothing granted but its temp directory.
     const tmp = this.tempDir();
-    const file = this.writePolicy("echo mxc-probe-ok", { allowWrite: [], deny: [], cwd: tmp, env });
+    const file = this.writePolicy("echo mxc-probe-ok", { allowWrite: [], read: [], deny: [], cwd: tmp, env });
     try {
       const run = await runCommand("echo mxc-probe-ok", { cwd: tmp, timeoutMs: 60_000, sandboxed: { file: found.exe, args: [file], env } });
       if (!run.stdout.includes("mxc-probe-ok")) {
@@ -100,7 +101,8 @@ export class MxcBackend implements SandboxBackend {
     if (deny.length > 0 && !this.denyPaths) {
       throw new Error(`this Windows build's process container cannot deny a path inside a grant (${deny.join(", ")})`);
     }
-    const file = this.writePolicy(request.command, { allowWrite: policy.allowWrite, deny, cwd: request.cwd, env: request.env });
+    const read = programDirs(request.env, policy.allowWrite, policy.denyRead);
+    const file = this.writePolicy(request.command, { allowWrite: policy.allowWrite, read, deny, cwd: request.cwd, env: request.env });
     return { file: exe, args: [file], env: request.env, cleanup: async () => fs.rmSync(file, { force: true }) };
   }
 
@@ -118,9 +120,24 @@ export class MxcBackend implements SandboxBackend {
    * every grant; it is read before the container starts. `fallback` keeps
    * MXC from editing folder permissions if the OS container is not there.
    */
-  private writePolicy(command: string, o: { allowWrite: string[]; deny: string[]; cwd: string; env: NodeJS.ProcessEnv }): string {
+  private writePolicy(
+    command: string,
+    o: { allowWrite: string[]; read: string[]; deny: string[]; cwd: string; env: NodeJS.ProcessEnv },
+  ): string {
     const tmp = this.tempDir();
-    const env = { ...o.env, TEMP: tmp, TMP: tmp };
+    // What pointed into the user's profile, which the container cannot open, points into a folder
+    // of its own instead: git stops at an unreadable ~/.gitconfig, npm reads ~/.npmrc. Not
+    // LOCALAPPDATA: Windows puts the container's own TEMP under it, in Packages\<container>\AC.
+    const home = path.join(tmp, "home");
+    // Node's realpath walks from the drive root, which the container cannot stat (EPERM on
+    // lstat 'C:\'): scripts, npm and npx fail before they start without these two flags.
+    const nodeOptions = Object.entries(o.env).find(([name]) => name.toUpperCase() === "NODE_OPTIONS")?.[1];
+    const env = withVariables(o.env, {
+      HOME: home,
+      USERPROFILE: home,
+      APPDATA: path.join(home, "AppData", "Roaming"),
+      NODE_OPTIONS: [nodeOptions, "--preserve-symlinks --preserve-symlinks-main"].filter(Boolean).join(" "),
+    });
     const policy = {
       version: "1.0.0",
       containment: "processcontainer",
@@ -132,9 +149,13 @@ export class MxcBackend implements SandboxBackend {
           .map(([name, value]) => `${name}=${value}`),
         inheritDefaultEnv: false,
       },
-      filesystem: { readwritePaths: [...o.allowWrite, tmp], readonlyPaths: [], deniedPaths: o.deny },
+      filesystem: { readwritePaths: [...o.allowWrite, tmp], readonlyPaths: o.read, deniedPaths: o.deny },
       network: { egress: { default: "deny" }, ingress: { default: "deny", hostLoopback: "deny" } },
-      ui: { disable: true, clipboard: "none", injection: false },
+      // With the UI subsystem off (MXC's default) hardly anything but cmd.exe starts: curl, node
+      // and git exit with STATUS_DLL_INIT_FAILED. So it is on, and processContainer.ui is left
+      // at its strictest default: the job's own window handles and a private atom table, no
+      // desktop switching, no system settings, no IME; and here no clipboard, no input injection.
+      ui: { disable: false, clipboard: "none", injection: false },
       fallback: { allowDaclMutation: false },
       telemetry: { enabled: false },
     };
@@ -143,14 +164,52 @@ export class MxcBackend implements SandboxBackend {
     return file;
   }
 
-  /** A temp directory of the container's own, granted to it: the shared one is outside every grant. */
+  /**
+   * A folder of the containers' own, granted to them, that holds the HOME
+   * they are given; removed by dispose(). Their TEMP Windows makes itself.
+   */
   private tempDir(): string {
     if (!this.tmp) {
       this.tmp = path.join(os.tmpdir(), `mini-claude-code-mxc-${process.pid}`);
-      fs.mkdirSync(this.tmp, { recursive: true });
+      fs.mkdirSync(path.join(this.tmp, "home", "AppData", "Roaming"), { recursive: true });
     }
     return this.tmp;
   }
+}
+
+/**
+ * The folders on PATH, to read and run programs from. A program needs a
+ * grant unless its folder is open to every AppContainer, which not every
+ * installer leaves it: Node's puts an ACL of its own on its folder. Left out
+ * are drive roots and any folder holding the home directory or a credential
+ * store, which a grant would open whole, and what a write grant has already.
+ */
+function programDirs(env: Record<string, string>, writable: string[], closed: string[]): string[] {
+  const value = Object.entries(env).find(([name]) => name.toUpperCase() === "PATH")?.[1] ?? "";
+  const home = os.homedir();
+  const seen = new Set<string>();
+  const dirs: string[] = [];
+  for (const entry of value.split(path.delimiter)) {
+    if (!entry || !path.isAbsolute(entry)) continue;
+    const dir = path.resolve(entry);
+    if (seen.has(dir.toLowerCase())) continue;
+    seen.add(dir.toLowerCase());
+    if (path.parse(dir).root === dir || inside(home, dir) || closed.some((p) => inside(p, dir))) continue;
+    if (writable.some((w) => inside(dir, w))) continue;
+    try {
+      if (fs.statSync(dir).isDirectory()) dirs.push(dir);
+    } catch {
+      // Not there: nothing to grant.
+    }
+  }
+  return dirs;
+}
+
+/** `env` with these variables set, whatever the case of the names it had: Windows reads them without case. */
+function withVariables(env: NodeJS.ProcessEnv, set: Record<string, string>): NodeJS.ProcessEnv {
+  const names = new Set(Object.keys(set).map((n) => n.toUpperCase()));
+  const kept = Object.entries(env).filter(([name]) => !names.has(name.toUpperCase()));
+  return { ...Object.fromEntries(kept), ...set };
 }
 
 /** cmd.exe, as the Bash tool runs it when there is no bash. */
