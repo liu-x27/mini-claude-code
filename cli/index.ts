@@ -42,6 +42,8 @@ import chalk from "chalk";
 import { AGENT_TOOL_NAMES, Agent } from "../src/agent.js";
 import { AllowlistJudge, createModelRouter, createRiskGate, LlmJudge } from "xavierjev";
 import { PermissionPresets, parseDecision, parseRule } from "../src/permissions/index.js";
+import { isSandboxBackendName, SANDBOX_BACKENDS, type SandboxBackendName, sandboxBackend } from "../src/sandbox/backends.js";
+import { Sandbox } from "../src/sandbox/index.js";
 import { SessionManager } from "../src/session/manager.js";
 import { globalRegistry, registerBuiltinTools } from "../src/tools/index.js";
 import type {
@@ -199,6 +201,12 @@ interface CliOptions {
   gateThreshold: number | undefined;
   /** When set, route between this and `model` instead of always using `model`. */
   cheapModel: ModelId | undefined;
+  /** From --sandbox: the OS sandbox Bash commands run in. */
+  sandbox: SandboxBackendName | undefined;
+  /** From --sandbox-allow-domain: hosts sandboxed commands may reach. */
+  sandboxDomains: string[];
+  /** From --sandbox-strict: no call may leave the sandbox. */
+  sandboxStrict: boolean;
   /** Sent as output_config.effort when given; otherwise the model's own default applies. */
   effort: EffortLevel | undefined;
   /** Prompt tokens at which to compact; undefined is the model's default, false never. */
@@ -223,6 +231,9 @@ function parseArgs(argv: string[]): CliOptions {
     gate: "off",
     gateThreshold: undefined,
     cheapModel: undefined,
+    sandbox: undefined,
+    sandboxDomains: [],
+    sandboxStrict: false,
     effort: undefined,
     compactAt: undefined,
     prompt: undefined,
@@ -345,6 +356,23 @@ function parseArgs(argv: string[]): CliOptions {
       case "--cheap-model":
         opts.cheapModel = next() as ModelId;
         break;
+      case "--sandbox": {
+        // Optional value, as for --gate: bare --sandbox is sandbox-runtime, the one with a Linux and a macOS side.
+        const value = argv[i + 1];
+        if (isSandboxBackendName(value)) {
+          opts.sandbox = value;
+          i++;
+        } else {
+          opts.sandbox = "srt";
+        }
+        break;
+      }
+      case "--sandbox-allow-domain":
+        opts.sandboxDomains.push(next());
+        break;
+      case "--sandbox-strict":
+        opts.sandboxStrict = true;
+        break;
       case "--effort": {
         const value = next();
         if (!(EFFORT_LEVELS as string[]).includes(value)) {
@@ -376,6 +404,14 @@ function parseArgs(argv: string[]): CliOptions {
     }
   }
 
+  if (!opts.sandbox && (opts.sandboxDomains.length > 0 || opts.sandboxStrict)) {
+    console.error(chalk.red("--sandbox-allow-domain and --sandbox-strict need --sandbox"));
+    process.exit(1);
+  }
+  if (opts.sandbox === "mxc" && opts.sandboxDomains.length > 0) {
+    console.error(chalk.red("--sandbox-allow-domain needs --sandbox srt: MXC filters the network by IP address, not by host"));
+    process.exit(1);
+  }
   if (opts.outputFormat !== "text" && opts.prompt === undefined) {
     console.error(chalk.red("--output-format json and stream-json need -p: the REPL is for a person"));
     process.exit(1);
@@ -466,6 +502,15 @@ ${chalk.bold("Options")}
                          - measure with npm run eval:risk-gate before changing
       --cheap-model <id> Route each new session between this and --model, using the
                          same judge. Needs --gate to supply one.
+      --sandbox [backend]
+                         Run Bash commands in an OS sandbox, and do not ask about
+                         them: writes only in the working directory, no reading
+                         ~/.ssh and other key stores, no network. ${SANDBOX_BACKENDS.join(" | ")}
+                         (default srt). A call may ask to leave it, and is then
+                         asked about like any Bash call. Exits if it is missing
+      --sandbox-allow-domain <host>
+                         Let sandboxed commands reach this host; repeatable
+      --sandbox-strict   Let no call leave the sandbox
       --effort <level>   low | medium | high | xhigh | max, sent as
                          output_config.effort (default: the model's own)
       --compact-at <n>   Compact the conversation once a prompt reaches n
@@ -638,6 +683,8 @@ class ReplState {
   private router: ModelRouter | undefined;
   /** The judge behind the gate, kept only so verifyGate() can probe it. */
   private judge: LlmJudge | undefined;
+  /** Undefined without --sandbox; shared by every Agent this CLI makes. */
+  readonly sandbox: Sandbox | undefined;
 
   turns = 0;
   totalInputTokens = 0;
@@ -662,6 +709,9 @@ class ReplState {
     const resolved = resolveGate(opts.gate, opts.gateThreshold);
     this.gate = resolved.gate;
     this.judge = resolved.judge;
+    this.sandbox = opts.sandbox
+      ? new Sandbox(sandboxBackend(opts.sandbox), { allowedDomains: opts.sandboxDomains, allowUnsandboxed: !opts.sandboxStrict })
+      : undefined;
 
     // Routing shares the gate's judge rather than opening a second one: the
     // two questions are different, the backend answering them is not.
@@ -721,6 +771,25 @@ class ReplState {
   }
 
   /**
+   * Bring the sandbox up before anything relies on it. Unlike the gate, a
+   * missing sandbox ends the CLI: going on without it would run commands as
+   * the user that --sandbox was given to keep contained.
+   */
+  async verifySandbox(): Promise<void> {
+    if (!this.sandbox) return;
+    const status = await this.sandbox.ready();
+    if (status.ok) {
+      console.log(chalk.gray(`Sandbox: ${this.sandbox.backend.name} · ${status.detail}`));
+      return;
+    }
+    console.error(chalk.red(`The ${this.sandbox.backend.name} sandbox is not available: ${status.detail}.`));
+    if (status.fix) console.error(chalk.gray(`   ${status.fix}`));
+    console.error(chalk.gray("   Nothing was run. Without --sandbox, Bash calls run as you, asked about under --ask."));
+    await this.sandbox.dispose();
+    process.exit(1);
+  }
+
+  /**
    * Build an Agent for the next turn, seeded with the current session so the
    * conversation carries over — see note 3 in the file header.
    */
@@ -739,6 +808,7 @@ class ReplState {
         ...(this.gate ? { gate: this.gate } : {}),
       },
       ...(this.router ? { router: this.router } : {}),
+      ...(this.sandbox ? { sandbox: this.sandbox } : {}),
       persistSessions: true,
     };
   }
@@ -758,6 +828,7 @@ class ReplState {
         ...(this.gate ? { gate: this.gate } : {}),
       },
       ...(this.router ? { router: this.router } : {}),
+      ...(this.sandbox ? { sandbox: this.sandbox } : {}),
       persistSessions: true,
       stream: true,
       ...(this.sessionId ? { resumeSessionId: this.sessionId } : {}),
@@ -1053,7 +1124,7 @@ async function repl(state: ReplState): Promise<void> {
   console.log(
     chalk.bold("agent-app") +
       chalk.gray(
-        ` · ${state.model} · ${state.preset}${state.gateBackend === "off" ? "" : `+gate:${state.gateBackend}`} · ${state.cwd}`,
+        ` · ${state.model} · ${state.preset}${state.gateBackend === "off" ? "" : `+gate:${state.gateBackend}`}${state.sandbox ? `+sandbox:${state.sandbox.backend.name}` : ""} · ${state.cwd}`,
       ),
   );
   console.log(chalk.gray("Type a prompt, or /help for commands. Ctrl+C to quit.\n"));
@@ -1099,6 +1170,7 @@ async function main(): Promise<void> {
   const state = new ReplState(opts);
   if (headless) state.prompt = headlessPrompt;
   await state.verifyGate();
+  await state.verifySandbox();
   const mcp = opts.mcpServers ? await startMcp(opts.mcpServers) : undefined;
 
   if (opts.acp) {
@@ -1108,6 +1180,7 @@ async function main(): Promise<void> {
     const conn = serveAcp(stream, { agent });
     await conn.closed;
     await mcp?.close();
+    await state.sandbox?.dispose();
     return;
   }
 
@@ -1123,6 +1196,8 @@ async function main(): Promise<void> {
     await repl(state);
   } finally {
     await mcp?.close();
+    // A backend's proxy would otherwise keep the process alive.
+    await state.sandbox?.dispose();
   }
 }
 
