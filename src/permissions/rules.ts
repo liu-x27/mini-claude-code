@@ -25,9 +25,12 @@ export interface RuleTarget {
   cwd: string;
 }
 
+/** The specificity of a rule with a pattern: one about particular commands, paths or domains. */
+export const PATTERN = 3;
+
 /** Pattern rules beat tool rules, which beat a prefix like `mcp__*`, which beats `*`. */
 export function specificity(rule: PermissionRule): number {
-  if (rulePattern(rule) !== undefined) return 3;
+  if (rulePattern(rule) !== undefined) return PATTERN;
   if (rule.tool === "*") return 0;
   return rule.tool.endsWith("*") ? 1 : 2;
 }

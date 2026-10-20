@@ -52,6 +52,14 @@ export abstract class Tool<TInput extends object = Record<string, unknown>> {
    */
   abstract execute(input: TInput, context: ToolContext): Promise<ToolResult>;
 
+  /**
+   * Whether this call runs in a sandbox, which then limits what it can
+   * reach. Where the rules would ask about such a call, it is let through.
+   */
+  sandboxed(_input: TInput): boolean {
+    return false;
+  }
+
   /** Check a call's input against `inputSchema`; the agent loop runs this before `execute`. */
   validate(input: unknown): Validated {
     return validateInput(this.inputSchema, input);

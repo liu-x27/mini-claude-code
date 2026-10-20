@@ -16,6 +16,7 @@ import type {
   TracedCall,
 } from "xavierjev";
 import type { HooksConfig } from "./hooks/index.js";
+import type { Sandbox } from "./sandbox/index.js";
 
 // ─────────────────────────────────────────────
 // Model & API
@@ -264,6 +265,15 @@ export interface AgentConfig {
 
   /** Permission configuration */
   permissions?: Partial<PermissionContext>;
+
+  /**
+   * Run Bash commands in this OS sandbox (see `src/sandbox`), shared with any
+   * subagent. A command in it is not asked about where the rules would ask;
+   * one that asks to leave it goes to the rules, the gate and the user as
+   * before. `run()` throws when the sandbox is not available, rather than
+   * running commands outside it.
+   */
+  sandbox?: Sandbox;
 
   /** Session ID to resume (optional) */
   resumeSessionId?: string;

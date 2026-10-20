@@ -1,6 +1,7 @@
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import type { SandboxedCommand } from "../sandbox/index.js";
 
 /** The shell the Bash tool runs commands in, and how to hand it one. */
 export interface Shell {
@@ -71,18 +72,25 @@ const DRAIN_MS = 250;
  * `exec` buffered everything up to 10 MB and killed the command past that,
  * so a verbose build either failed or came back whole. Here memory stays
  * bounded however much a command prints, and the caller trims the text.
+ *
+ * `sandboxed`, when given, is what to start instead of the shell: the
+ * command already wrapped by a sandbox backend, with its environment.
  */
-export function runCommand(command: string, opts: { cwd: string; timeoutMs: number }): Promise<RunOutcome> {
+export function runCommand(
+  command: string,
+  opts: { cwd: string; timeoutMs: number; sandboxed?: SandboxedCommand },
+): Promise<RunOutcome> {
   const shell = resolveShell();
+  const start = opts.sandboxed ?? { file: shell.file, args: shell.args(command), verbatim: shell.verbatim };
   return new Promise((resolve) => {
     let child: ChildProcess;
     try {
-      child = spawn(shell.file, shell.args(command), {
+      child = spawn(start.file, start.args, {
         cwd: opts.cwd,
-        env: { ...process.env, FORCE_COLOR: "0" },
+        env: opts.sandboxed?.env ?? { ...process.env, FORCE_COLOR: "0" },
         stdio: ["ignore", "pipe", "pipe"],
         windowsHide: true,
-        windowsVerbatimArguments: shell.verbatim,
+        windowsVerbatimArguments: start.verbatim ?? false,
         // Its own process group, so a timeout can kill what it started too.
         detached: process.platform !== "win32",
       });

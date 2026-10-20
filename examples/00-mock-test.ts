@@ -14,6 +14,7 @@ import { FileEditTool } from "../src/tools/file-edit.js";
 import { GlobTool } from "../src/tools/glob.js";
 import { buildRgArgs, GrepTool } from "../src/tools/grep.js";
 import { decodeOutput, resolveShell } from "../src/tools/shell.js";
+import { Sandbox, type SandboxBackend, type SandboxedCommand, type SandboxRequest, type SandboxStatus } from "../src/sandbox/index.js";
 import { AnthropicClient, buildParams } from "../src/model/anthropic.js";
 import { transientFailure } from "../src/model/transient.js";
 import { APIConnectionError, APIError, APIUserAbortError } from "@anthropic-ai/sdk";
@@ -2763,6 +2764,151 @@ await checkAsync("成本：没有价格的模型记为未知，不冒充 Opus 5 
   const client = new ScriptedClient([{ ...said("ok"), usage: used }]);
   const result = await scriptedAgent(client, { model: "minimax-m2" }).agent.run("go");
   if (result.usage.estimatedCostUsd !== null) throw new Error(`MiniMax 被算成了 $${result.usage.estimatedCostUsd}`);
+});
+
+// ─────────────────────────────────────────────
+// 15. Sandbox：假后端，测的是 harness 这一侧——什么进沙箱、什么要问、沙箱不在时绝不裸跑
+// ─────────────────────────────────────────────
+section("15. Sandbox");
+
+/** 假的沙箱后端：命令原样交给 shell，只记下它经过了这里；探测和包装的结果可以指定 */
+class FakeBackend implements SandboxBackend {
+  readonly name = "fake";
+  readonly prepared: SandboxRequest[] = [];
+  constructor(private opts: { probe?: SandboxStatus; probeThrows?: string; prepareError?: string } = {}) {}
+  async probe(): Promise<SandboxStatus> {
+    if (this.opts.probeThrows) throw new Error(this.opts.probeThrows);
+    return this.opts.probe ?? { ok: true, detail: "fake" };
+  }
+  async prepare(request: SandboxRequest): Promise<SandboxedCommand> {
+    if (this.opts.prepareError) throw new Error(this.opts.prepareError);
+    this.prepared.push(request);
+    const { shell, command, env } = request;
+    return { file: shell.file, args: shell.args(command), verbatim: shell.verbatim, env };
+  }
+}
+
+const bashRegistry = new ToolRegistry().register(new BashTool());
+const sandboxed = (client: ModelClient, sandbox: Sandbox, config: Omit<AgentConfig, "client" | "sandbox"> = {}) =>
+  new Agent({ client, persistSessions: false, cwd: scratch, sandbox, ...config }, bashRegistry);
+
+await checkAsync("沙箱：--ask 下沙箱里的 Bash 不问就跑、命令经过后端；要跳出沙箱的照样问，拒绝了就不跑", async () => {
+  const backend = new FakeBackend();
+  const asked: string[] = [];
+  const client = new ScriptedClient([
+    calls(["a", "Bash", { command: "echo inside" }]),
+    calls(["b", "Bash", { command: "echo out > sbx-outside.txt", dangerouslyDisableSandbox: true }]),
+    said("done"),
+  ]);
+  await sandboxed(client, new Sandbox(backend), {
+    permissions: { ...PermissionPresets.askDangerous(), prompt: async (r) => (asked.push(r.description ?? ""), "deny") },
+  }).run("go");
+  if (backend.prepared.map((p) => p.command).join("|") !== "echo inside") throw new Error(`经过后端的: ${backend.prepared.map((p) => p.command).join("|")}`);
+  if (!String(toolResultsIn(client.seen[1]!)[0]?.content).includes("inside")) throw new Error("沙箱里的命令没跑出结果");
+  if (asked.length !== 1 || !asked[0]!.startsWith("[outside the sandbox]")) throw new Error(`问了: ${JSON.stringify(asked)}`);
+  if (await exists(path.join(scratch, "sbx-outside.txt"))) throw new Error("拒绝了还是在沙箱外跑了");
+});
+
+await checkAsync("沙箱：deny 规则照样拦；针对这条命令的 ask 规则、PreToolUse 说的 ask 照样问；不在沙箱里的照样问", async () => {
+  const asked: string[] = [];
+  const perm = new PermissionSystem({
+    defaultMode: "allow",
+    rules: [parseRule("Bash(rm *)", "deny"), parseRule("Bash(git push *)", "ask"), ...PermissionPresets.askDangerous().rules!],
+    prompt: async (r) => (asked.push(String(r.input["command"])), "deny"),
+  });
+  const run = (command: string, options: { hook?: "allow" | "ask"; sandboxed?: boolean }) =>
+    perm.check({ toolName: "Bash", input: { command }, description: command, cwd: scratch }, options);
+  const cases: Array<[string, { hook?: "allow" | "ask"; sandboxed?: boolean }, boolean, boolean]> = [
+    // 命令, 选项, 放行?, 问了?
+    ["ls", { sandboxed: true }, true, false],
+    ["rm -rf dist", { sandboxed: true }, false, false],
+    ["git push origin main", { sandboxed: true }, false, true],
+    ["ls -la", { sandboxed: true, hook: "ask" }, false, true],
+    ["ls -a", { sandboxed: false }, false, true],
+  ];
+  for (const [command, options, allowed, wasAsked] of cases) {
+    asked.length = 0;
+    const got = await run(command, options);
+    if (got !== allowed || (asked.length > 0) !== wasAsked) throw new Error(`${command}: 放行 ${got}，问了 ${asked.length} 次`);
+  }
+});
+
+await checkAsync("沙箱：后端不可用（探测说不行或探测本身抛错）时 run() 报错、模型一次都没调；包装出错时命令不跑，模型收到原因", async () => {
+  for (const backend of [
+    new FakeBackend({ probe: { ok: false, detail: "bwrap not found", fix: "Install bubblewrap." } }),
+    new FakeBackend({ probeThrows: "bwrap not found" }),
+  ]) {
+    const client = new ScriptedClient([said("should not be reached")]);
+    let threw = "";
+    try {
+      await sandboxed(client, new Sandbox(backend), { permissions: PermissionPresets.allowAll() }).run("go");
+    } catch (err) {
+      threw = String(err);
+    }
+    if (!threw.includes("bwrap not found") || client.seen.length !== 0) throw new Error(`报错: ${threw}；模型被调了 ${client.seen.length} 次`);
+  }
+
+  const client = new ScriptedClient([calls(["a", "Bash", { command: "echo x > sbx-broken.txt" }]), said("done")]);
+  await sandboxed(client, new Sandbox(new FakeBackend({ prepareError: "namespace setup failed" })), {
+    permissions: PermissionPresets.allowAll(),
+  }).run("go");
+  const [result] = toolResultsIn(client.seen[1]!);
+  if (!result?.is_error || !String(result.content).includes("namespace setup failed")) throw new Error(`回给模型的: ${JSON.stringify(result)}`);
+  if (await exists(path.join(scratch, "sbx-broken.txt"))) throw new Error("沙箱没起来，命令却在沙箱外跑了");
+});
+
+await checkAsync("沙箱：allowUnsandboxed: false 时 schema 里没有 dangerouslyDisableSandbox，硬传也不跑", async () => {
+  const strict = new BashTool(new Sandbox(new FakeBackend(), { allowUnsandboxed: false }));
+  if ("dangerouslyDisableSandbox" in strict.inputSchema.properties) throw new Error("严格模式还提供了出口");
+  const res = await strict.execute({ command: "echo x > sbx-strict.txt", dangerouslyDisableSandbox: true }, { ...ctx, cwd: scratch });
+  if (res.type !== "error" || (await exists(path.join(scratch, "sbx-strict.txt")))) throw new Error(`硬传出口: ${JSON.stringify(res)}`);
+});
+
+await checkAsync("沙箱：子代理的 Bash 也在同一个沙箱里，同样不问", async () => {
+  const backend = new FakeBackend();
+  let asked = 0;
+  const client = new ScriptedClient([
+    calls(["t1", "Task", { description: "run it", prompt: "Run echo sub." }]),
+    calls(["s1", "Bash", { command: "echo sub" }]),
+    said("sub done"),
+    said("done"),
+  ]);
+  await sandboxed(client, new Sandbox(backend), {
+    permissions: { ...PermissionPresets.askDangerous(), prompt: async () => (asked++, "deny") },
+  }).run("go");
+  if (backend.prepared.map((p) => p.command).join("|") !== "echo sub" || asked !== 0) {
+    throw new Error(`经过后端的: ${backend.prepared.map((p) => p.command).join("|")}；问了 ${asked} 次`);
+  }
+});
+
+await checkAsync("沙箱：工作区是 agent 的 cwd 而不是调用的 cwd（命令仍在调用的 cwd 里跑）；~/.ssh 禁读；名字像 key 的环境变量不传", async () => {
+  const backend = new FakeBackend();
+  const sandbox = new Sandbox(backend, { allowedDomains: ["registry.npmjs.org"] });
+  const sub = path.join(scratch, "sbx-sub");
+  await fs.mkdir(sub, { recursive: true });
+  process.env.SBX_TEST_API_KEY = "sk-not-real";
+  try {
+    const res = await new BashTool(sandbox).execute({ command: 'echo "[$SBX_TEST_API_KEY][$PATH]"', cwd: ".." }, { ...ctx, cwd: sub });
+    const { policy, cwd, env } = backend.prepared[0]!;
+    if (policy.allowWrite[0] !== path.resolve(sub)) throw new Error(`可写的工作区: ${policy.allowWrite[0]}`);
+    if (path.resolve(cwd) !== path.resolve(scratch)) throw new Error(`命令该在调用的 cwd 里跑: ${cwd}`);
+    if ("SBX_TEST_API_KEY" in env || !env.PATH && !env.Path) throw new Error("交给后端的环境变量不对");
+    if (!policy.denyRead.includes(path.join(os.homedir(), ".ssh"))) throw new Error(`禁读: ${policy.denyRead.join(", ")}`);
+    if (policy.allowedDomains.join(",") !== "registry.npmjs.org") throw new Error(`可连的域名: ${policy.allowedDomains.join(",")}`);
+    if (res.type !== "success") throw new Error(res.message);
+    if (!res.output.includes("[][") || res.output.includes("[][]")) throw new Error(`沙箱里看到的: ${res.output}`);
+  } finally {
+    delete process.env.SBX_TEST_API_KEY;
+    await sandbox.dispose();
+  }
+});
+
+check("沙箱：没有沙箱时 Bash 的 schema 和描述跟以前一样；有沙箱时描述里不出现路径（换目录不该打掉提示缓存）", () => {
+  const plain = new BashTool();
+  if ("dangerouslyDisableSandbox" in plain.inputSchema.properties || /sandbox/i.test(plain.description)) throw new Error("没有沙箱也提到了沙箱");
+  const boxed = new BashTool(new Sandbox(new FakeBackend()));
+  if (!("dangerouslyDisableSandbox" in boxed.inputSchema.properties) || !boxed.description.includes("sandbox")) throw new Error("有沙箱却没告诉模型");
+  if (boxed.description.includes(os.homedir()) || boxed.description.includes(process.cwd())) throw new Error("描述里有路径");
 });
 
 await fs.rm(scratch, { recursive: true, force: true });

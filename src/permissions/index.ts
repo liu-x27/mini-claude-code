@@ -6,10 +6,11 @@ import type {
   PermissionMode,
   PermissionPrompt,
   PermissionRequest,
+  PermissionRule,
   RiskGate,
 } from "../types.js";
 import { logger } from "../utils/logger.js";
-import { ruleMatches, specificity } from "./rules.js";
+import { PATTERN, ruleMatches, specificity } from "./rules.js";
 
 export { parseRule } from "./rules.js";
 
@@ -44,9 +45,14 @@ export class PermissionSystem {
    * Check if a tool call should be allowed.
    * Returns true if allowed, false if denied.
    * In "ask" mode, interactively prompts the user.
+   *
+   * `sandboxed` says the call will run in a sandbox. Such a call is let
+   * through where it would be asked about — what it can reach is then the
+   * sandbox's to limit — unless the asking comes from a rule about this very
+   * command or from a hook. A deny is a deny either way.
    */
-  async check(request: PermissionRequest, options: { hook?: "allow" | "ask" } = {}): Promise<boolean> {
-    const mode = this.resolveMode(request);
+  async check(request: PermissionRequest, options: { hook?: "allow" | "ask"; sandboxed?: boolean } = {}): Promise<boolean> {
+    const { mode, rule } = this.resolve(request);
 
     // A PreToolUse hook may allow a call or insist it is asked about, but it
     // cannot reopen a call a rule denies.
@@ -62,6 +68,10 @@ export class PermissionSystem {
         return false;
 
       case "ask":
+        if (options.sandboxed && !(rule && specificity(rule) === PATTERN)) {
+          logger.debug(`${request.toolName} runs in the sandbox, unasked`);
+          return true;
+        }
         return this.askOrGate(request);
     }
   }
@@ -113,13 +123,20 @@ export class PermissionSystem {
    * why an answer of "always" is put at the front.
    */
   private resolveMode(request: PermissionRequest): PermissionMode {
+    return this.resolve(request).mode;
+  }
+
+  /** The mode, and the rule that decided it; no rule means the default mode did. */
+  private resolve(request: PermissionRequest): { mode: PermissionMode; rule?: PermissionRule } {
     const target = { toolName: request.toolName, input: request.input, cwd: request.cwd ?? process.cwd() };
     const matching = this.context.rules
       .map((rule, index) => ({ rule, index }))
       .filter(({ rule }) => ruleMatches(rule, target));
-    if (matching.some(({ rule }) => rule.mode === "deny")) return "deny";
+    const deny = matching.find(({ rule }) => rule.mode === "deny");
+    if (deny) return { mode: "deny", rule: deny.rule };
     matching.sort((a, b) => specificity(b.rule) - specificity(a.rule) || a.index - b.index);
-    return matching[0]?.rule.mode ?? this.context.defaultMode;
+    const decided = matching[0]?.rule;
+    return decided ? { mode: decided.mode, rule: decided } : { mode: this.context.defaultMode };
   }
 
   /**

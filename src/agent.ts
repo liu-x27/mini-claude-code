@@ -13,8 +13,10 @@ import { AnthropicClient } from "./model/anthropic.js";
 import { transientFailure } from "./model/transient.js";
 import type { ModelClient, ModelDelta, ModelResponse } from "./model/types.js";
 import { PermissionSystem } from "./permissions/index.js";
+import type { Sandbox } from "./sandbox/index.js";
 import { SessionManager } from "./session/manager.js";
 import type { Tool } from "./tools/base.js";
+import { BashTool } from "./tools/bash.js";
 import { globalRegistry, registerBuiltinTools } from "./tools/index.js";
 import type { ToolRegistry } from "./tools/registry.js";
 import type {
@@ -94,7 +96,7 @@ export class Agent {
    * exactOptionalPropertyTypes cannot hold an absent value.
    */
   private config: Required<
-    Omit<AgentConfig, "router" | "client" | "retryJudge" | "stopJudge" | "effort" | "compactAt" | "hooks" | "reconnect">
+    Omit<AgentConfig, "router" | "client" | "retryJudge" | "stopJudge" | "effort" | "compactAt" | "hooks" | "reconnect" | "sandbox">
   >;
   private registry: ToolRegistry;
   private permissions: PermissionSystem;
@@ -107,6 +109,7 @@ export class Agent {
   private compactAt: number | false | undefined;
   private hooks: HooksConfig | undefined;
   private reconnect: { attempts: number; delayMs: number };
+  private sandbox: Sandbox | undefined;
   /** The session the current run is on, for hook input. */
   private sessionId = "";
   /** Set when a hook answers `continue: false`: the run ends after the call in progress. */
@@ -148,6 +151,7 @@ export class Agent {
     this.effort = config.effort;
     this.compactAt = config.compactAt;
     this.hooks = config.hooks;
+    this.sandbox = config.sandbox;
     this.reconnect = {
       attempts: Math.max(0, config.reconnect?.attempts ?? DEFAULT_RECONNECT.attempts),
       delayMs: Math.max(0, config.reconnect?.delayMs ?? DEFAULT_RECONNECT.delayMs),
@@ -181,13 +185,15 @@ export class Agent {
     const { signal } = options;
     const skills = this.config.skills ? await discoverSkills(this.config.cwd) : [];
     this.extraTools.clear();
+    if (this.sandbox) await this.offerSandboxedBash(this.sandbox);
     // Tool<SkillInput> is a Tool: the registry holds its tools the same way.
     if (skills.length > 0) this.offer(new SkillTool() as unknown as Tool);
     this.offer(new TodoWriteTool() as unknown as Tool);
     if (this.depth === 0) {
       this.offer(new TaskTool(this.config.subagents, (type, task) => this.runSubagent(type, task)) as unknown as Tool);
     }
-    const tools = [...this.resolveTools(), ...this.extraTools.values()];
+    // A tool of the agent's own takes the place of the registry's of that name: the sandboxed Bash does.
+    const tools = [...this.resolveTools().filter((t) => !this.extraTools.has(t.name)), ...this.extraTools.values()];
     this.runSignal = signal;
     const session = await this.initSession();
     await this.emit({
@@ -729,7 +735,10 @@ export class Agent {
         toolUseId,
         cwd: context.cwd,
       },
-      pre.allow ? { hook: "allow" } : pre.ask ? { hook: "ask" } : {},
+      {
+        ...(pre.allow ? { hook: "allow" as const } : pre.ask ? { hook: "ask" as const } : {}),
+        sandboxed: tool.sandboxed(input),
+      },
     );
     if (!allowed) {
       // Not "Permission denied": qwen3:14b read that as a file-system error and
@@ -890,6 +899,27 @@ export class Agent {
     session.metadata.model = verdict.model;
   }
 
+  /**
+   * Put a Bash of the agent's own in place of the registry's: one that runs
+   * every command in the sandbox and tells the model so. The run does not
+   * start when the sandbox is not there, or when the Bash it would replace
+   * is not the built-in one; either way commands would run as the user, and
+   * nothing would say so.
+   */
+  private async offerSandboxedBash(sandbox: Sandbox): Promise<void> {
+    const status = await sandbox.ready();
+    if (!status.ok) {
+      const fix = status.fix ? ` ${status.fix}` : "";
+      throw new Error(`The ${sandbox.backend.name} sandbox is not available: ${status.detail}.${fix}`);
+    }
+    const bash = this.registry.get("Bash");
+    if (bash === undefined) return;
+    if (!(bash instanceof BashTool)) {
+      throw new Error("A sandbox is set, but this registry's Bash is not the built-in tool, the only one that runs commands in it.");
+    }
+    this.offer(new BashTool(sandbox) as unknown as Tool);
+  }
+
   /** Add a tool of the agent's own for this run, unless allowedTools / disallowedTools rule it out. */
   private offer(tool: Tool): void {
     const { allowedTools, disallowedTools } = this.config;
@@ -933,6 +963,7 @@ export class Agent {
         skills: false,
         stream: false,
         ...(hooks ? { hooks } : {}),
+        ...(this.sandbox ? { sandbox: this.sandbox } : {}),
         ...(this.retryJudge ? { retryJudge: this.retryJudge } : {}),
         ...(this.stopJudge ? { stopJudge: this.stopJudge } : {}),
       },
