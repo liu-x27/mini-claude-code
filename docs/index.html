@@ -183,8 +183,9 @@
 
   /* the four questions */
   .harm { border-top: 2px solid var(--text); padding-top: 14px; }
-  .harm code { border: 0; background: none; padding: 0; font-size: 14px; color: var(--accent); }
+  .harm > code { border: 0; background: none; padding: 0; font-size: 14px; color: var(--accent); }
   .harm p { margin: 8px 0 0; color: var(--dim); font-size: 15px; }
+  .harm p strong { color: var(--text); font-weight: 600; }
   .rule-line {
     margin-top: 28px; padding: 16px 20px; border-left: 3px solid var(--accent);
     background: var(--panel); color: var(--dim); max-width: 78ch;
@@ -244,6 +245,7 @@
     <nav aria-label="Sections">
       <a href="#gate">The gate</a>
       <a href="#evidence">Evidence</a>
+      <a href="#sandbox">Sandbox</a>
       <a href="#found">What it found</a>
       <a href="#inside">Inside</a>
       <a href="#start">Start</a>
@@ -257,7 +259,8 @@
       <h1>Doesn’t ask about <code>wc&nbsp;-l</code>. Does ask about <code class="held">rm&nbsp;-rf</code>.</h1>
       <p class="lede">
         mini-claude-code is a small, readable agent harness on the Claude API: the loop, the tools,
-        the permissions, hooks, MCP and ACP, in about 5,300 lines you can read in an afternoon.
+        the permissions, hooks, MCP, ACP and the backends for two OS sandboxes, in about 6,400 lines
+        you can read in an afternoon.
         Its <strong>risk gate</strong> asks a local model four narrow questions about every shell
         command, runs the ones that clear all four, and brings you the rest. On 153 commands it had
         never seen, it cleared <strong>38% of the safe ones and none of the 76 unsafe</strong>.
@@ -387,8 +390,59 @@
       </p>
     </section>
 
+    <section id="sandbox">
+      <div class="kicker"><b>04</b><span>The sandbox</span></div>
+      <h2>Fewer prompts, because a command can reach less.</h2>
+      <div class="prose">
+        <p>
+          The gate decides whether a command looks safe; it does nothing about one it misjudges.
+          <code>--sandbox</code> is the part that does. Every Bash command the model makes runs in an OS
+          sandbox: Anthropic’s <a href="https://github.com/anthropics/sandbox-runtime">sandbox-runtime</a>
+          (srt 0.0.81) or, on Windows, Microsoft’s
+          <a href="https://github.com/microsoft/mxc">Execution Containers</a> (MXC).
+        </p>
+        <p>
+          Where your rules would ask about a call that runs there, it runs without asking, as in Claude
+          Code’s auto-allow sandbox mode. A deny still denies, and an ask still asks when it comes from a
+          rule about that particular command or from a PreToolUse hook. A call may ask to leave the
+          sandbox, and your rules, the gate and you then decide it like any Bash call;
+          <code>--sandbox-strict</code> takes that way out away. When the sandbox is not there, nothing
+          runs.
+        </p>
+        <p>Of the gate’s four questions, the sandbox settles two, a third in part, and not the first.</p>
+      </div>
+      <div class="grid g4" style="margin-top: 28px">
+        <div class="harm"><code>destroys-data</code><p><strong>Not settled.</strong> Inside the working directory a sandboxed command can still delete or overwrite anything, unasked, and it no longer reaches the gate. That is git’s to cover.</p></div>
+        <div class="harm"><code>outside-cwd</code><p><strong>Settled, for writes.</strong> It can write only in the working directory and the sandbox’s temp directory; with MXC, also a HOME of its own.</p></div>
+        <div class="harm"><code>exfiltrates</code><p><strong>Settled, for hosts you have not allowed.</strong> srt lets out only those <code>--sandbox-allow-domain</code> names; MXC lets out none.</p></div>
+        <div class="harm"><code>reveals-secret</code><p><strong>In part:</strong> only for the key stores outside the working directory, such as <code>~/.ssh</code>. A <code>.env</code> file inside it can still be read.</p></div>
+      </div>
+      <p class="rule-line">
+        Only Bash runs in the sandbox. Read, Write, Edit, Glob, Grep and WebFetch run in the harness’s own
+        process, as you, under the rules as before, and so do MCP servers and hooks. Neither backend
+        claims more than this, and neither should be taken for more: srt’s README calls it a beta research
+        preview, its Windows side alpha, and lists gaps in its network fence; MXC publishes no threat model.
+      </p>
+      <div class="grid g4" style="margin-top: 36px">
+        <div class="stat"><div class="n">19<small>/19</small></div><p>escape tests pass with srt 0.0.81 on bubblewrap, in CI on ubuntu-24.04, on every push.</p></div>
+        <div class="stat"><div class="n">18<small>/19</small></div><p>with srt on a Windows CI runner, the workspace in the profile’s temp directory. The 19th, a Node script that should run, does not, as <a href="https://github.com/anthropics/sandbox-runtime/issues/657">sandbox-runtime#657</a> describes.</p></div>
+        <div class="stat"><div class="n">19<small>/19</small></div><p>with srt on the same runner and the workspace on <code>D:</code>.</p></div>
+        <div class="stat"><div class="n">18<small>/18</small></div><p>with MXC 1.0.1 on one Windows 11 Home machine, run by hand.</p></div>
+      </div>
+      <p class="fineprint">
+        Each run sends real commands through the Bash tool. Controls must work, a Node script among
+        them; escapes must fail: writes outside the working directory, one of them through a link,
+        reading <code>~/.ssh</code>, and HTTP, HTTPS and a direct TCP connection out. Each escape is
+        first done outside the sandbox, and a network case counts only if curl ran and said why it failed,
+        so a sandbox that never came up fails rather than passes. Not run: srt on that Windows 11 machine,
+        whose <a href="https://github.com/liu-x27/mini-claude-code/blob/main/docs/sandbox-windows.md">one-time install</a>
+        is the owner’s to run, and anything on a Mac. What each backend lets a command read, write and
+        reach is in the <a href="https://github.com/liu-x27/mini-claude-code#the-sandbox">README</a>.
+      </p>
+    </section>
+
     <section id="found">
-      <div class="kicker"><b>04</b><span>What it found in itself</span></div>
+      <div class="kicker"><b>05</b><span>What it found in itself</span></div>
       <h2>The failures that raise no error.</h2>
       <div class="prose">
         <p>
@@ -408,7 +462,7 @@
     </section>
 
     <section id="inside">
-      <div class="kicker"><b>05</b><span>What’s inside</span></div>
+      <div class="kicker"><b>06</b><span>What’s inside</span></div>
       <h2>A whole harness, small enough to read.</h2>
       <div class="grid g3" style="margin-top: 8px">
         <div class="card"><span class="tag">src/agent.ts</span><h3>The loop</h3><p>Reads in parallel, writes in order, input checked against each tool’s schema, sessions saved every turn and resumable.</p></div>
@@ -421,7 +475,7 @@
     </section>
 
     <section id="gallery">
-      <div class="kicker"><b>06</b><span>Gallery</span></div>
+      <div class="kicker"><b>07</b><span>Gallery</span></div>
       <h2>Every picture is from a real run.</h2>
       <div class="grid g2" style="margin-top: 8px">
         <figure class="shot">
@@ -473,7 +527,7 @@
     </section>
 
     <section id="start">
-      <div class="kicker"><b>07</b><span>Quick start</span></div>
+      <div class="kicker"><b>08</b><span>Quick start</span></div>
       <h2>Two commands to a REPL.</h2>
       <div class="grid g2" style="margin-top: 8px">
         <pre class="term"><span class="p">$</span> npm install
