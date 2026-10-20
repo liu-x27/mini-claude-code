@@ -20,6 +20,7 @@
  */
 
 import { randomBytes } from "node:crypto";
+import { realpathSync } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as net from "node:net";
 import * as os from "node:os";
@@ -193,8 +194,10 @@ try {
 
   // Node's realpath stats every folder down to the script; srt's account on Windows cannot stat
   // those between the profile and a workspace two or more levels inside it.
+  // Compared as real paths: a runner's temp directory is spelled C:\Users\RUNNER~1\..., its home C:\Users\runneradmin.
+  const real = (p: string) => realpathSync.native(p);
   const srtProfileStat = {
-    when: name === "srt" && process.platform === "win32" && within(workspace, home) && workspace !== home,
+    when: name === "srt" && process.platform === "win32" && within(real(workspace), real(home)) && real(workspace) !== real(home),
     issue: "sandbox-runtime#657",
     matches: /EPERM: operation not permitted, lstat/,
   };
@@ -385,7 +388,11 @@ console.log(
 );
 console.log("─".repeat(50));
 
-// On Actions, the same table on the run's summary page.
+// On Actions, the tally as a notice, which anyone can read on the run's page, and the table on its summary.
+if (process.env.GITHUB_ACTIONS) {
+  const where = flag("--root") ? `workspace under ${flag("--root")}` : "workspace in the temp directory";
+  console.log(`::notice title=${name} on ${process.platform} (${where})::${passed}/${outcomes.length} passed${knownNote}, ${failed.length} failed. ${status.detail}`);
+}
 if (process.env.GITHUB_STEP_SUMMARY) {
   const mark = (o: Outcome) => (o.known ? `⚠️ known, ${o.known}` : o.ok ? "✅" : "❌");
   const rows = outcomes.map((o) => `| ${mark(o)} | ${o.case} | ${o.expect} | ${o.detail.replace(/\|/g, "\\|")} |`);
