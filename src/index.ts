@@ -56,6 +56,19 @@ export {
   parseRule,
 } from "./permissions/index.js";
 
+// Sandbox — where Bash commands run, when one is set
+export { CREDENTIAL_PATHS, Sandbox, SandboxUnavailable } from "./sandbox/index.js";
+export type {
+  SandboxBackend,
+  SandboxedCommand,
+  SandboxOptions,
+  SandboxPolicy,
+  SandboxRequest,
+  SandboxStatus,
+} from "./sandbox/index.js";
+export { MxcBackend } from "./sandbox/mxc.js";
+export { SrtBackend } from "./sandbox/srt.js";
+
 // Judge — the decision layer in front of the permission prompt
 export {
   AllowlistJudge,
