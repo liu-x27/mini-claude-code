@@ -46,6 +46,8 @@ jobs:
       # Ubuntu 24.04 confines unprivileged user namespaces with AppArmor, which stops bubblewrap;
       # srt's README and CI lift that. The runner is thrown away after the job.
       - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      # bubblewrap on its own first, as srt's CI checks it: a failure here is the runner's, not srt's.
+      - run: bwrap --version && bwrap --unshare-pid --unshare-user --cap-drop ALL --ro-bind / / --proc /proc true
       - run: npm ci
       - run: npm run test:sandbox -- --backend srt
 

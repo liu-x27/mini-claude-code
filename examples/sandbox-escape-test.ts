@@ -44,11 +44,21 @@ if (!isSandboxBackendName(name)) {
   process.exit(2);
 }
 
+/** On Actions, also an annotation, which the run's page shows to anyone, unlike its logs. */
+function annotate(title: string, message: string): void {
+  const data = message.replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A");
+  if (process.env.GITHUB_ACTIONS) console.log(`::error title=${title.replace(/[%:,\r\n]/g, " ")}::${data}`);
+}
+
 let sandbox = new Sandbox(sandboxBackend(name));
 const status = await sandbox.ready();
 if (!status.ok) {
   console.error(chalk.red(`✗ the ${name} sandbox is not available: ${status.detail}`));
   if (status.fix) console.error(chalk.gray(`  ${status.fix}`));
+  annotate(`${name} sandbox not available`, status.detail);
+  if (process.env.GITHUB_STEP_SUMMARY) {
+    await fs.appendFile(process.env.GITHUB_STEP_SUMMARY, `### Sandbox escape tests: ${name} on ${process.platform}\n\nNot run: the sandbox is not available: ${status.detail}\n\n`);
+  }
   await sandbox.dispose();
   process.exit(1);
 }
@@ -104,6 +114,7 @@ async function test(label: string, expect: string, fn: () => Promise<string>): P
     const detail = err instanceof Error ? err.message : String(err);
     outcomes.push({ case: label, expect, ok: false, detail });
     console.log(`${chalk.red("  ✗")} ${label} ${chalk.red(`— ${detail}`)}`);
+    annotate(label, detail);
   }
 }
 
