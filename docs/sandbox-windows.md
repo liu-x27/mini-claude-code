@@ -12,8 +12,8 @@ quickly; read their current docs before relying on this page.
 
 ## srt: sandbox-runtime (alpha on Windows)
 
-Each command runs as a separate local account, `srt-sandbox`, under a restricted,
-write-restricted token in a job object. Its connections are blocked by Windows Filtering
+Each command runs as a separate local account, `srt-sandbox`, under a restricted token that
+is also write-restricted, in a job object. Its connections are blocked by Windows Filtering
 Platform (WFP) filters except to srt's own proxy on the loopback interface, and its file access
 comes from ACL entries srt adds for that account only.
 
@@ -105,6 +105,11 @@ npm run test:sandbox -- --backend srt --root D:\CODE\sbx-test
 ```
 
 The second puts the test's workspace on `D:\`, where #402 applied before 0.0.81.
+
+In CI, on GitHub's `windows-latest` runner (Windows Server, not Windows 11) with 0.0.81, the
+first passed 18 of 19, the 19th, a Node script, failing as #657 says, and the second all 19
+([run 39366323349](https://github.com/liu-x27/mini-claude-code/actions/runs/39366323349)).
+It has not been run on this repository owner's machine, which needs the install above first.
 
 ## MXC: Microsoft Execution Containers
 

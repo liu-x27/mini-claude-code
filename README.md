@@ -14,14 +14,14 @@ local model four narrow questions about every shell command, runs the ones that 
 all four, and brings you the rest.
 
 [![CI](https://github.com/liu-x27/mini-claude-code/actions/workflows/ci.yml/badge.svg)](https://github.com/liu-x27/mini-claude-code/actions/workflows/ci.yml)
-![TypeScript](https://img.shields.io/badge/TypeScript-5.3k_lines_in_src-141311?style=flat-square&logo=typescript&logoColor=white)
+![TypeScript](https://img.shields.io/badge/TypeScript-6.4k_lines_in_src-141311?style=flat-square&logo=typescript&logoColor=white)
 ![MCP](https://img.shields.io/badge/MCP-stdio_%2B_HTTP-141311?style=flat-square)
 ![ACP](https://img.shields.io/badge/Agent_Client_Protocol-editors-141311?style=flat-square)
 ![Claude Code hooks](https://img.shields.io/badge/Claude_Code-hooks_%26_rules-d7361f?style=flat-square)
 ![Agent Skills](https://img.shields.io/badge/Agent_Skills-compatible-141311?style=flat-square)
 [![License: MIT](https://img.shields.io/badge/license-MIT-141311?style=flat-square)](LICENSE)
 
-**[Project page](https://liu-x27.github.io/mini-claude-code/)** · [The gate](#the-risk-gate) · [Evidence](#what-it-measures) · [Quickstart](#quickstart) · [How it works](#how-it-works) · [Measurements](docs/measurements.md)
+**[Project page](https://liu-x27.github.io/mini-claude-code/)** · [The gate](#the-risk-gate) · [The sandbox](#the-sandbox) · [Evidence](#what-it-measures) · [Quickstart](#quickstart) · [How it works](#how-it-works) · [Measurements](docs/measurements.md)
 
 </div>
 
@@ -50,7 +50,8 @@ terminal REPL (or `-p`, with JSON output for scripts), a web UI, the Agent Clien
 Protocol for an editor, and a library API.
 
 It is deliberately not a wrapper around someone else's agent SDK. The loop, the tool
-protocol, and the permission model are all in `src/`, about 5,300 lines of TypeScript.
+protocol, the permission model and the sandbox backends are all in `src/`, about 6,400 lines of
+TypeScript.
 
 ```
    CLI (REPL, -p) ─┐
@@ -63,6 +64,7 @@ protocol, and the permission model are all in `src/`, about 5,300 lines of TypeS
                           ├─ PermissionSystem  rules per tool or argument; a deny always wins
                           │    ├─ Hooks         Claude Code's format — PreToolUse, PermissionRequest, …
                           │    └─ RiskGate      optional — clears the easy Bash "ask" cases
+                          ├─ Sandbox           optional — Bash runs in sandbox-runtime or MXC, unasked
                           ├─ Context           AGENTS.md, skills, prompt caching, compaction
                           └─ SessionManager    saved every turn, resumable
 ```
@@ -475,14 +477,9 @@ Bash calls only, and what that is worth is counted below, on a dev set and on th
 held out from it.
 
 A judge, however good, does not stop a command it misjudges from doing damage. That is a
-sandbox's job, and this harness has none: a cleared command runs as you. On Windows there
-are now two ways to one without Docker. Microsoft's Execution Containers (MXC), generally
-available since 2026-10-07, contain a process in an AppContainer; Codex and Copilot use
-them, and Claude Code is listed as coming. Anthropic's sandbox-runtime has a Windows
-version, in alpha, that runs commands as a dedicated `srt-sandbox` account under a
-restricted token and a job object, with WFP filtering outbound traffic and NTFS ACLs; it
-installs once, with `npx @anthropic-ai/sandbox-runtime windows-install` and one UAC prompt.
-Neither is wired in here yet.
+sandbox's job. `--sandbox` runs Bash in one, Anthropic's sandbox-runtime or Microsoft's
+Execution Containers, and stops asking about what runs there; without it a cleared command
+runs as you. See [The sandbox](#the-sandbox).
 
 #### What it measures
 
@@ -539,6 +536,105 @@ any wording it produced.
 reasoned wrong and then measured right, the six wordings refused for `outside-cwd`, the
 per-question metric that turned out to be meaningless after it had already nominated a
 rewrite, the endpoint survey behind the logprob path, and which sets are now spent.
+
+### The sandbox
+
+A judge decides whether a command looks safe; it does nothing about one it misjudges.
+`--sandbox` is the part that does. Every Bash command the model makes runs in an OS
+sandbox, and the harness stops asking about the ones that run there.
+
+```bash
+npm run cli -- --sandbox                 # srt: bubblewrap on Linux, sandbox-exec on macOS
+npm run cli -- --sandbox mxc             # Windows: Microsoft's process containers
+npm run cli -- --sandbox --sandbox-allow-domain registry.npmjs.org
+```
+
+Two backends sit behind one interface, `SandboxBackend` in `src/sandbox`. **srt** is
+Anthropic's [sandbox-runtime](https://github.com/anthropics/sandbox-runtime), an optional
+dependency pinned at 0.0.81; srt calls itself a research preview, and its Windows side alpha.
+**MXC** is Microsoft's [Execution Containers](https://github.com/microsoft/mxc), driven
+through the `wxc-exec.exe` its SDK ships; the SDK is 108 MB and not a dependency, and the
+backend finds it once installed. What each lets a command do:
+
+| | srt on Linux | srt on Windows (alpha) | MXC on Windows |
+|---|---|---|---|
+| How | bubblewrap: its own user, PID and network namespaces; out only through srt's proxy | a separate `srt-sandbox` account under a write-restricted token in a job object; WFP filters; ACL entries | the OS's process container, of the AppContainer family; Windows enforces its grants and network rules |
+| Writes | the working directory and srt's `$TMPDIR` | the working directory and its own temp directory | the working directory, its TEMP, and a HOME of its own |
+| Reads | what you can, except `~/.ssh` and the other key stores in `CREDENTIAL_PATHS` | by default your profile minus srt's list of credential stores, and what `Users` can read | the working directory, the folders on PATH, and what every AppContainer can read |
+| Network | none, or the hosts `--sandbox-allow-domain` names | the same, the rest blocked by WFP | none: MXC's rules match IP addresses, not hosts |
+| Shell | bash | Git Bash | cmd.exe: Git Bash cannot start in a container ([mxc#1061](https://github.com/microsoft/mxc/issues/1061)) |
+| Setup | bubblewrap, socat and ripgrep; on Ubuntu 24.04, an AppArmor setting | a one-time install with a UAC prompt, which creates the account and WFP filters | the SDK's `wxc-exec.exe`; no install or administrator, on Windows 11 24H2 or 25H2 with KB5120998 |
+
+srt on macOS uses sandbox-exec; nothing here has been run on a Mac. What the Windows
+installs change on a machine, and how to undo them, is in
+[docs/sandbox-windows.md](docs/sandbox-windows.md).
+
+**What it changes about asking.** Where the rules would ask about a Bash call that runs in
+the sandbox, it runs without asking, as in Claude Code's auto-allow sandbox mode. A deny
+still denies, and a rule about that particular command (`Bash(git push *)` set to ask) or a
+PreToolUse hook that says ask still asks. A call can ask to leave the sandbox with
+`dangerouslyDisableSandbox: true`, Claude Code's name for it, and is then an ordinary Bash
+call: your rules, the gate and you decide, as before there was a sandbox, so under
+`--allow-all` it runs unasked. `--sandbox-strict` takes that way out away. A subagent's Bash
+runs in the same sandbox.
+
+**When the sandbox is not there, nothing runs.** The CLI starts a backend by running one
+command through it, and exits when that fails, naming what is missing and how to get it;
+`Agent.run()` throws. A command the backend cannot wrap comes back to the model as not run.
+No path runs a command as though there were no sandbox, and section 15 of the mock suite
+holds the harness to that with a stand-in backend.
+
+**What it does not cover.**
+
+- Only Bash. Read, Write, Edit, Glob, Grep and WebFetch run in the harness's own process,
+  as you, under the rules as before; so do MCP servers and hooks.
+- Inside the working directory, a sandboxed command can still delete, overwrite or read
+  anything, a `.env` file included, unasked. Of the gate's four questions the sandbox settles
+  two, a write outside the directory and an upload (to any host you have not allowed), and a
+  third, revealing a secret, only for the key stores outside the directory; not the first,
+  data loss. A sandboxed call no longer reaches the gate, so that is git's to cover.
+- Variables named like keys or tokens (`SECRET_ENV`) are not passed in. That is the
+  harness's doing, not the OS's.
+- Run it on a project other than this checkout. A sandboxed command can rewrite anything in
+  the working directory, which here includes the harness's own code, which its next start
+  runs as you. srt's own folder is kept read-only even then, since `srt-win.exe` starts every
+  command, and the MXC backend will not start commands while `wxc-exec.exe` is inside the
+  working directory.
+- Neither backend claims more than this, and neither should be taken for more. srt's README
+  calls it a beta research preview, its Windows side alpha, and lists gaps in its network
+  fence; MXC publishes no threat model, and says each of its backends has distinct security
+  properties to be checked against the workload.
+
+**What has been tested.** `npm run test:sandbox -- --backend srt|mxc` runs real commands
+through the Bash tool. Allowed, as controls: a command and its output, its exit code,
+writing and reading in the working directory, a Node script, the sandbox's temp directory,
+curl starting. Blocked: a write to the home directory, to the shared temp directory, next to
+the working directory, to `~/.npm/_logs` (which srt opens by default), and through a link in
+the working directory that points outside; reading or listing `~/.ssh`; HTTP and HTTPS to a
+host, and a direct TCP connection to an IP address; with srt, a host the policy names
+answering while one it does not is refused; a write into srt's own files from a grant that
+covers them, and with MXC a grant that would let commands write over `wxc-exec.exe`. Each
+blocked case first does the same thing outside the sandbox, and a network case counts only if
+curl ran and said why it failed, so a sandbox that never came up, or a machine with no
+network, fails rather than passes. And an API key in the harness's environment does not
+reach the command.
+
+| Backend | Where | Result |
+|---|---|---|
+| srt 0.0.81 on bubblewrap | CI, ubuntu-24.04, every push | 19/19 ([run 39366323349](https://github.com/liu-x27/mini-claude-code/actions/runs/39366323349)) |
+| srt 0.0.81 on Windows | CI, a `windows-latest` runner (Windows Server), workspace in the profile's temp directory | 18/19; the 19th, a Node script, fails as [sandbox-runtime#657](https://github.com/anthropics/sandbox-runtime/issues/657) says: the account cannot stat the folders between the profile and the workspace |
+| srt 0.0.81 on Windows | the same runner, workspace on `D:` | 19/19 |
+| srt 0.0.81 on Windows | this machine, Windows 11 Home | not run: its one-time install is the owner's to run ([steps](docs/sandbox-windows.md)) |
+| MXC 1.0.1, OS process container | this machine, Windows 11 Home China 25H2, build 26200.9711, by hand | 18/18 |
+| srt on macOS | — | not run |
+
+Getting there found four things the harness had wrong, each fixed now. On MXC the first run passed
+every network case with curl never starting: with the container's UI subsystem off, as MXC
+has it by default, curl, node and git cannot load at all. Node then could not run either,
+since its installer gives its folder an ACL no AppContainer can read, and git stopped at an
+unreadable `~/.gitconfig`. On Linux, srt points `TMPDIR` at `/tmp/claude` and leaves
+creating it to whoever embeds srt. A network case now counts only if curl ran and said why
+it failed.
 
 ### The other half: routing
 
@@ -842,7 +938,8 @@ other the way one compound yes/no did.
 ## Development
 
 ```bash
-npm test               # 122 checks, mocked — no API key needed
+npm test               # 135 checks, mocked — no API key needed
+npm run test:sandbox -- --backend srt   # escape tests on a real sandbox (or --backend mxc)
 npm run eval:risk-gate # measure the gate on the dev set — no API key needed
 npm run eval:risk-gate -- --cases test3  # a held-out set; read its docstring first
 npm run eval:routing   # measure the model router — needs a judge
@@ -852,7 +949,9 @@ npm run build
 ```
 
 CI runs the mock suite, the typecheck, lint and build, and the risk gate's dev set on the
-offline allow-list — never a held-out set, whose reads are logged — on Ubuntu and Windows.
+offline allow-list — never a held-out set, whose reads are logged — on Ubuntu and Windows,
+and the sandbox's escape tests with srt on Ubuntu 24.04 and, allowed to fail, on a Windows
+runner.
 A second workflow, started by hand only, runs Terminal-Bench through Harbor (below).
 
 `npm run typecheck` covers `cli/`, `server/`, `client/` and `examples/` as well as
@@ -1081,6 +1180,13 @@ stdio against the real CLI, and each hook event. Two more checks are the harness
 failures on Terminal-Bench (2026-10-19), each reproduced before its fix: a stream that a
 stand-in server cuts after two deltas, and a reply whose thinking uses the whole of
 max_tokens.
+
+Section 15 holds the sandbox's side of the permission system to what [The
+sandbox](#the-sandbox) says, against a stand-in backend: a sandboxed call is not asked about
+and one leaving the sandbox is, a deny still denies, a backend that is missing or cannot wrap
+a command runs nothing, and a subagent's Bash shares the sandbox. The backends themselves are
+checked by the escape tests: in CI with srt, on Ubuntu and on a Windows runner, and by hand
+with MXC on one Windows 11 Home machine.
 
 Reproducing the tables takes two commands, and the bare ones are not the offline ones —
 both runners default to `--backend llm`:
