@@ -48,3 +48,23 @@ jobs:
       - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - run: npm ci
       - run: npm run test:sandbox -- --backend srt
+
+  sandbox-windows:
+    # sandbox-runtime's Windows side, which srt calls alpha. Its one-time install creates the
+    # srt-sandbox account and WFP filters: on a runner, an administrator with UAC off that is
+    # thrown away after the job, it runs unattended, as in srt's own CI. Allowed to fail meanwhile.
+    runs-on: windows-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24.12.0
+          cache: npm
+      - run: git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
+      - run: npm ci
+      - run: node node_modules/@anthropic-ai/sandbox-runtime/dist/cli.js windows-install
+      # The workspace under the profile's temp directory, then on the D: drive, where any signed-in
+      # user may modify new folders and srt confined writes only from 0.0.81 on.
+      - run: npm run test:sandbox -- --backend srt
+      - run: npm run test:sandbox -- --backend srt --root "$env:RUNNER_TEMP"
